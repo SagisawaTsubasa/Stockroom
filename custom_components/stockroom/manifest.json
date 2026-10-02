@@ -1,6 +1,9 @@
 {
   "domain": "stockroom",
   "name": "Stockroom 仓储盘点",
+  "after_dependencies": [
+    "mobile_app"
+  ],
   "codeowners": [
     "@SagisawaTsubasa"
   ],

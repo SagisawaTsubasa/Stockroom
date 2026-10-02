@@ -176,7 +176,7 @@ class BambuDeductor:
         ]
 
     # ------------------------------------------------------------------
-    # Setup / teardown
+    # Setup
     # ------------------------------------------------------------------
 
     def async_setup(self) -> list[Any]:
@@ -195,13 +195,6 @@ class BambuDeductor:
                 )
             )
         return list(self._unsubs)
-
-    @callback
-    def async_teardown(self) -> None:
-        """Cancel all listeners (also reached via engine teardown)."""
-        for unsub in self._unsubs:
-            unsub()
-        self._unsubs.clear()
 
     def _make_handler(self, prefix: str):
         """Bind the printer prefix into the state-change callback."""

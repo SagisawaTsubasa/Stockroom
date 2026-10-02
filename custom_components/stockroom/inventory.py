@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import re
 from datetime import UTC, datetime
 from typing import Any
@@ -49,7 +50,10 @@ class StockroomItemError(HomeAssistantError):
 # Quantities are stored rounded to 3 decimals; anything that collapses to a
 # sub-micro residue (1000 - 65.28 - 934.72 style float dust) becomes 0.
 def _round_quantity(value: float) -> float:
-    """Normalize a quantity: clamp float dust to a clean 0, round to 3 dp."""
+    """Normalize a quantity: reject non-finite/hallucinated values, clamp
+    float dust to a clean 0, round to 3 dp."""
+    if not math.isfinite(value) or value > 1e9:
+        return 0.0
     rounded = round(value, 3)
     return 0.0 if abs(rounded) < 1e-6 else rounded
 
@@ -165,7 +169,10 @@ class InventoryEngine:
             self._unsubs.extend(self._bambu.async_setup())
         if self._opt(CONF_SCAN_ENABLED):
             self._scan = ScanManager(self.hass, self.entry, self, self.store)
-            self._unsubs.extend(self._scan.async_setup())
+            # The scan manager unsubscribes its own listeners in its teardown
+            # (its webhook needs an unregister+re-register lifecycle, so it
+            # must not share the plain unsub list with the deduction engine).
+            self._scan.async_setup()
             _LOGGER.info(
                 "[%s] 拍照扫描已启用，webhook：%s",
                 self.warehouse_name, self._scan.webhook_url,
@@ -174,13 +181,13 @@ class InventoryEngine:
     @callback
     def async_teardown(self) -> None:
         """Stop all listeners."""
+        if self._scan is not None:
+            self._scan.async_teardown()
+            self._scan = None
         for unsub in self._unsubs:
             unsub()
         self._unsubs.clear()
         self._bambu = None
-        if self._scan is not None:
-            self._scan.async_teardown()
-            self._scan = None
 
     @property
     def scan(self) -> ScanManager | None:
@@ -203,7 +210,11 @@ class InventoryEngine:
             threshold = float(item.get("low_threshold", 0.0))
         except (TypeError, ValueError):
             threshold = 0.0
-        return float(item.get("quantity", 0.0)) <= threshold
+        try:
+            quantity = float(item.get("quantity", 0.0))
+        except (TypeError, ValueError):
+            quantity = 0.0
+        return quantity <= threshold
 
     def summary_counts(self) -> dict[str, Any]:
         """Totals for the summary sensors (optionally split by category)."""

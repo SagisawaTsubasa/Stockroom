@@ -104,9 +104,14 @@ if _INSTALL_STUBS:
     _module(
         "aiohttp",
         ClientError=type("ClientError", (Exception,), {}),
+        ClientResponseError=type("ClientResponseError", (Exception,), {}),
         ClientSession=type("ClientSession", (), {}),
         ClientTimeout=lambda **kwargs: None,
         web=types.SimpleNamespace(json_response=_json_response),
+    )
+    _module(
+        "homeassistant.helpers.aiohttp_client",
+        async_get_clientsession=lambda hass: object(),
     )
 
     class _ConfigFlow:
@@ -165,12 +170,20 @@ if _INSTALL_STUBS:
         "homeassistant.components",
         notify=types.SimpleNamespace(DOMAIN="notify", ATTR_TARGET="target"),
     )
+    _webhook_log: list[tuple[str, str]] = []
     _module(
         "homeassistant.components.webhook",
         async_generate_url=lambda hass, webhook_id: f"http://localhost:8123/api/webhook/{webhook_id}",
-        async_register=lambda *args, **kwargs: None,
-        async_unregister=lambda *args, **kwargs: None,
+        async_unregister=lambda hass, webhook_id: _webhook_log.append(("unregister", webhook_id)),
     )
+    _webhook_module = sys.modules["homeassistant.components.webhook"]
+
+    def _webhook_register(hass, domain, name, webhook_id, handler, **kwargs):
+        _webhook_module.registered.append(webhook_id)
+
+    _webhook_module.async_register = _webhook_register
+    _webhook_module.registered = []
+    _webhook_module.unregistered = _webhook_log
     _module(
         "homeassistant.components.mobile_app.util",
         get_notify_service=lambda hass, webhook_id: None,

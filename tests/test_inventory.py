@@ -26,9 +26,14 @@ from custom_components.stockroom.storage import StockroomStore
 class FakeBus:
     def __init__(self) -> None:
         self.events: list[tuple[str, dict]] = []
+        self.listeners: list[tuple[str, object]] = []
 
     def async_fire(self, event_type, data=None):
         self.events.append((event_type, dict(data or {})))
+
+    def async_listen(self, event_type, callback):
+        self.listeners.append((event_type, callback))
+        return lambda: None
 
 
 class FakeStates:

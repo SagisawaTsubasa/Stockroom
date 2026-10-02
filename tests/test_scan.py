@@ -26,9 +26,13 @@ from custom_components.stockroom.scan import (
 from custom_components.stockroom.storage import StockroomStore
 from tests.test_inventory import FakeHass, make_store
 
-# ----------------------------------------------------------------------
-# Fixtures
-# ----------------------------------------------------------------------
+# JPEG / PNG 容器魔数（写入测试样本用）
+JPEG_SAMPLE = b"\xff\xd8" + b"fake-jpeg-payload"
+PNG_SAMPLE = b"\x89PNG\r\n\x1a\n" + b"fake-png-payload"
+
+
+def asyncio_run(coro):
+    return asyncio.run(coro)
 
 
 def make_manager(monkeypatch, options=None) -> tuple[ScanManager, InventoryEngine, StockroomStore, FakeHass]:
@@ -90,6 +94,17 @@ def test_parse_suggestions_bad_category_defaults_other():
     assert out[0]["category"] == "other"
 
 
+def test_parse_suggestions_rejects_non_finite_numbers():
+    """模型幻觉出 Infinity/1e999 时按 0 处理，不能把 inf 写进库存。"""
+    out = parse_suggestions(
+        '{"items": [{"name": "X", "quantity": Infinity, "low_threshold": 1e999}]}'
+    )
+    assert out[0]["quantity"] == 0.0
+    assert out[0]["low_threshold"] == 0.0
+    out = parse_suggestions('[{"name": "Y", "quantity": NaN}]')
+    assert out[0]["quantity"] == 0.0
+
+
 # ----------------------------------------------------------------------
 # extract_image_bytes
 # ----------------------------------------------------------------------
@@ -118,13 +133,8 @@ def _multipart_request(fields):
 
 
 def test_extract_image_json_base64():
-    raw = b"\xff\xd8fakejpeg"
-    req = _json_request({"image_base64": base64.b64encode(raw).decode()})
-    assert asyncio_run(extract_image_bytes(req)) == raw
-
-
-def asyncio_run(coro):
-    return asyncio.run(coro)
+    req = _json_request({"image_base64": base64.b64encode(JPEG_SAMPLE).decode()})
+    assert asyncio_run(extract_image_bytes(req)) == JPEG_SAMPLE
 
 
 def test_extract_image_errors():
@@ -138,17 +148,43 @@ def test_extract_image_errors():
         asyncio_run(extract_image_bytes(_multipart_request({})))
 
 
+def test_extract_image_rejects_non_object_json():
+    req = _json_request([1, 2, 3])
+    with pytest.raises(ValueError):
+        asyncio_run(extract_image_bytes(req))
+
+
+def test_extract_image_rejects_non_image_magic():
+    raw = base64.b64encode(b"just some text, definitely not an image").decode()
+    req = _json_request({"image_base64": raw})
+    with pytest.raises(ValueError):
+        asyncio_run(extract_image_bytes(req))
+
+
 def test_extract_image_multipart_file_field():
-    raw = b"binary-image-bytes"
-    field = types.SimpleNamespace(file=io.BytesIO(raw))
+    field = types.SimpleNamespace(file=io.BytesIO(JPEG_SAMPLE))
     req = _multipart_request({"image": field})
-    assert asyncio_run(extract_image_bytes(req)) == raw
+    assert asyncio_run(extract_image_bytes(req)) == JPEG_SAMPLE
+
+
+def test_extract_image_multipart_file_field_via_executor():
+    """传了 hass 时文件读取走 executor（家法：事件循环内不裸读文件）。"""
+    field = types.SimpleNamespace(file=io.BytesIO(PNG_SAMPLE))
+    reads = []
+
+    class _Hass:
+        async def async_add_executor_job(self, func, *args):
+            reads.append(func)
+            return func(*args)
+
+    req = _multipart_request({"image": field})
+    assert asyncio_run(extract_image_bytes(req, _Hass())) == PNG_SAMPLE
+    assert len(reads) == 1
 
 
 def test_extract_image_multipart_base64_field():
-    raw = b"raw-bytes-field"
-    req = _multipart_request({"image": base64.b64encode(raw).decode()})
-    assert asyncio_run(extract_image_bytes(req)) == raw
+    req = _multipart_request({"image": base64.b64encode(PNG_SAMPLE).decode()})
+    assert asyncio_run(extract_image_bytes(req)) == PNG_SAMPLE
 
 
 # ----------------------------------------------------------------------
@@ -186,6 +222,16 @@ def test_confirm_creates_item_and_drops_suggestion(monkeypatch):
 def test_confirm_unknown_sid_returns_none(monkeypatch):
     manager, *_ = make_manager(monkeypatch)
     assert manager.confirm("deadbeef") is None
+
+
+def test_confirm_overrides_merge_into_extra(monkeypatch):
+    manager, _engine, _store, hass = make_manager(monkeypatch)
+    (entry,) = manager.queue_suggestions(
+        [{"name": "PLA 白色", "category": "filament", "material": "PLA"}]
+    )
+    item = manager.confirm(entry["id"], overrides={"material": "PLA+", "full_weight_g": 1000})
+    assert item["extra"] == {"material": "PLA+", "full_weight_g": 1000.0}
+    hass.drain()
 
 
 def test_confirm_failure_restores_suggestion(monkeypatch):
@@ -240,12 +286,12 @@ def test_notification_actions_route(monkeypatch):
 
 
 def test_notification_action_ignores_unknown_tokens(monkeypatch):
-    manager, _engine, _store, hass = make_manager(monkeypatch)
+    manager, engine, _store, hass = make_manager(monkeypatch)
     manager._on_notification_action(types.SimpleNamespace(data={"action": "other_action"}))
     manager._on_notification_action(
         types.SimpleNamespace(data={"action": f"{ACTION_CONFIRM_PREFIX}missing"})
     )
-    assert manager.engine.items == {}
+    assert engine.items == {}
     hass.drain()
 
 
@@ -265,7 +311,7 @@ def test_webhandler_rejects_unusable_payloads(monkeypatch):
 
 def test_webhandler_requires_configuration(monkeypatch):
     manager, _engine, _store, hass = make_manager(monkeypatch, options={})
-    raw = base64.b64encode(b"img").decode()
+    raw = base64.b64encode(JPEG_SAMPLE).decode()
     resp = asyncio.run(manager._handle_webhook(hass, manager.webhook_id, _json_request({"image_base64": raw})))
     assert resp.status == 200
     hass.drain()
@@ -276,7 +322,7 @@ def test_webhandler_happy_path_queues_and_returns(monkeypatch):
         monkeypatch,
         options={"scan_enabled": True, "scan_api_key": "k", "scan_base_url": "http://llm", "scan_model": "v"},
     )
-    raw = base64.b64encode(b"img").decode()
+    raw = base64.b64encode(JPEG_SAMPLE).decode()
 
     class _Resp:
         def raise_for_status(self):
@@ -290,10 +336,7 @@ def test_webhandler_happy_path_queues_and_returns(monkeypatch):
             }
 
     class _Session:
-        def __init__(self, *a, **k):
-            pass
-
-        def post(self, url, json=None, headers=None):
+        def post(self, url, json=None, headers=None, timeout=None):
             class _Ctx:
                 async def __aenter__(self):
                     return _Resp()
@@ -305,17 +348,34 @@ def test_webhandler_happy_path_queues_and_returns(monkeypatch):
             assert url.endswith("/chat/completions")
             return _Ctx()
 
-        @property
-        def closed(self):
-            return False
-
-        async def close(self):
-            pass
-
-    monkeypatch.setattr(scan_mod, "ClientSession", _Session)
+    monkeypatch.setattr(scan_mod, "async_get_clientsession", lambda hass: _Session())
     resp = asyncio.run(manager._handle_webhook(hass, manager.webhook_id, _json_request({"image_base64": raw})))
     payload = json.loads(resp.text)
     assert payload["ok"] is True
     assert payload["suggestions"][0]["name"] == "M3×8"
     assert len(manager.queue()) == 1
+    hass.drain()
+
+
+# ----------------------------------------------------------------------
+# Lifecycle / notify guards
+# ----------------------------------------------------------------------
+
+
+def test_scan_lifecycle_registers_and_unregisters_webhook(monkeypatch):
+    import homeassistant.components.webhook as webhook_stub
+
+    manager, _engine, _store, _hass = make_manager(monkeypatch)
+    manager.async_setup()
+    assert manager.webhook_id in webhook_stub.registered
+    manager.async_setup()  # re-setup (unregister-first) must not raise
+    assert webhook_stub.registered.count(manager.webhook_id) == 2
+    manager.async_teardown()
+    assert ("unregister", manager.webhook_id) in webhook_stub.unregistered
+
+
+def test_notify_without_device_is_silent(monkeypatch):
+    manager, _engine, _store, hass = make_manager(monkeypatch)
+    manager.queue_suggestions([{"name": "M3×8", "category": "screw"}])
+    asyncio_run(manager._async_notify(list(manager.queue().values())))  # 无 device_id：不发也不炸
     hass.drain()

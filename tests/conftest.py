@@ -52,6 +52,12 @@ def _identity_decorator(func):
     return func
 
 
+def _callback_decorator(func):
+    """Mirror the real @callback marker so tests can assert it."""
+    func._hass_callback = True
+    return func
+
+
 def _accepts_anything(name: str):
     return type(name, (), {"__init__": lambda self, *a, **k: None})
 
@@ -152,7 +158,7 @@ if _INSTALL_STUBS:
         HomeAssistant=type("HomeAssistant", (), {}),
         ServiceCall=type("ServiceCall", (), {}),
         State=type("State", (), {"state": "", "attributes": {}}),
-        callback=_identity_decorator,
+        callback=_callback_decorator,
     )
     _module("homeassistant.exceptions", HomeAssistantError=type("HomeAssistantError", (Exception,), {}))
 

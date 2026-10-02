@@ -386,9 +386,7 @@ class InventoryEngine:
         item[ITEM_UPDATED_AT] = utcnow_iso()
         self.store.mark_dirty(self.entry_id)
         self._fire_event(iid, "remove", None, note=None)
-        self.hass.loop.call_soon_threadsafe(
-            async_dispatcher_send, self.hass, SIGNAL_ITEMS_UPDATED.format(self.entry_id)
-        )
+        async_dispatcher_send(self.hass, SIGNAL_ITEMS_UPDATED.format(self.entry_id))
         _LOGGER.info("[%s] 移除条目 %s", self.warehouse_name, iid)
         return item
 
@@ -400,24 +398,14 @@ class InventoryEngine:
     def _after_mutation(self, item: dict[str, Any], action: str, note: str | None = None) -> None:
         """Stamp update time, flag persistence, dispatch entities, fire event.
 
-        The broadcast/event hops go through ``call_soon_threadsafe`` so the
-        whole mutation stays correct even when the caller runs on an executor
-        thread (dispatcher callbacks must run on the event loop; HA 2026
-        raises on off-loop ``async_write_ha_state``).
+        All callers run on the event loop (services, webhook, state-change
+        callbacks), so a direct dispatch is both correct and keeps the
+        blocking-service semantic "returned ⇒ state already written".
         """
         item[ITEM_UPDATED_AT] = utcnow_iso()
         self.store.mark_dirty(self.entry_id)
-        self.hass.loop.call_soon_threadsafe(
-            self._async_broadcast_and_fire, action, item["id"], item["quantity"], note
-        )
-
-    @callback
-    def _async_broadcast_and_fire(
-        self, action: str, item_id: str, new_quantity: float | None, note: str | None
-    ) -> None:
-        """Loop-side half of _after_mutation (dispatcher + bus event)."""
         async_dispatcher_send(self.hass, SIGNAL_ITEMS_UPDATED.format(self.entry_id))
-        self._fire_event(item_id, action, new_quantity, note=note)
+        self._fire_event(item["id"], action, item["quantity"], note=note)
 
     @callback
     def _fire_event(

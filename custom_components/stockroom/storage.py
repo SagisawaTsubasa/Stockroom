@@ -128,10 +128,13 @@ def schedule_store_flush(hass: HomeAssistant, store: StockroomStore) -> None:
     """Ask for a flush from any thread.
 
     On the event loop this is a plain task; from executor threads
-    (``async_create_task`` would raise there) it hops over via
-    ``run_coroutine_threadsafe``.
+    (``async_create_task`` would raise there) the task creation is forwarded
+    onto the loop instead. The coroutine is created only in the branch that
+    consumes it, so a failed scheduling can't leak it.
     """
     try:
-        hass.async_create_task(store.async_flush())
+        asyncio.get_running_loop()
     except RuntimeError:
-        asyncio.run_coroutine_threadsafe(store.async_flush(), hass.loop)
+        hass.loop.call_soon_threadsafe(hass.async_create_task, store.async_flush())
+    else:
+        hass.async_create_task(store.async_flush())

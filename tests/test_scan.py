@@ -389,3 +389,17 @@ def test_notify_without_device_is_silent(monkeypatch):
     manager.queue_suggestions([{"name": "M3×8", "category": "screw"}])
     asyncio_run(manager._async_notify(list(manager.queue().values())))  # 无 device_id：不发也不炸
     hass.drain()
+
+
+def test_handle_update_is_callback():
+    """锁住线程安全根因修复：dispatcher 目标必须是 @callback，否则 HA 2026
+    会把它丢进线程池（HassJobType.Executor），async_write_ha_state 直接 RuntimeError。"""
+    from custom_components.stockroom.entity import (
+        StockroomEntity,
+        StockroomSummaryEntity,
+    )
+
+    for cls in (StockroomEntity, StockroomSummaryEntity):
+        assert getattr(cls._handle_update, "_hass_callback", False) is True, (
+            f"{cls.__name__}._handle_update 丢失 @callback——dispatcher 会走 executor 线程"
+        )

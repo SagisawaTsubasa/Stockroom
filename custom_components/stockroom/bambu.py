@@ -47,7 +47,7 @@ from .const import (
     BAMBU_TASK_NAME_ENTITY_SUFFIX,
     BAMBU_WEIGHT_ENTITY_SUFFIX,
 )
-from .storage import last_deduct_records
+from .storage import last_deduct_records, schedule_store_flush
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -314,7 +314,7 @@ class BambuDeductor:
                 "[%s] 打印完成，已按分盘克数自动扣减 %d 个条目（任务：%s）",
                 prefix, deducted, task_name or "未知",
             )
-            self.hass.async_create_task(self.store.async_flush())
+            schedule_store_flush(self.hass, self.store)
 
     def _entity_state(self, entity_id: str) -> str | None:
         """Return an entity state string, or None for missing/unavailable."""

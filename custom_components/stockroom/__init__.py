@@ -109,6 +109,9 @@ SCAN_CONFIRM_SCHEMA = vol.Schema(
         vol.Optional("unit"): cv.string,
         vol.Optional("low_threshold"): cv.positive_float,
         vol.Optional("location"): cv.string,
+        vol.Optional("material"): cv.string,
+        vol.Optional("color"): cv.string,
+        vol.Optional("full_weight_g"): cv.positive_float,
     }
 )
 SCAN_DISMISS_SCHEMA = vol.Schema(
@@ -123,7 +126,17 @@ def _scan_overrides(call: ServiceCall) -> dict:
     """Pick the suggestion-overriding fields out of a scan_confirm call."""
     return {
         key: call.data[key]
-        for key in ("name", "quantity", "category", "unit", "low_threshold", "location")
+        for key in (
+            "name",
+            "quantity",
+            "category",
+            "unit",
+            "low_threshold",
+            "location",
+            EXTRA_MATERIAL,
+            EXTRA_COLOR,
+            EXTRA_FULL_WEIGHT_G,
+        )
         if call.data.get(key) is not None
     }
 
@@ -295,6 +308,10 @@ def _async_register_services(hass: HomeAssistant) -> None:
         for sid in sids:
             item = scan.confirm(sid, overrides)
             if item is None:
+                if len(sids) > 1:
+                    raise HomeAssistantError(
+                        f"stockroom: 扫描建议不存在或已处理：{sid}（前 {len(confirmed)} 个已入库）"
+                    )
                 raise HomeAssistantError(f"stockroom: 扫描建议不存在或已处理：{sid}")
             confirmed.append(item)
         if confirmed:
@@ -390,6 +407,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Clean up persisted state when an entry is removed."""
+    # The scan webhook must go too: a removed entry leaves no engine behind,
+    # so the endpoint would otherwise live until the next HA restart.
+    from homeassistant.components.webhook import async_unregister
+
+    from .scan import webhook_id_for_entry
+
+    async_unregister(hass, webhook_id_for_entry(entry.entry_id))
     store = hass.data.get(DOMAIN, {}).get("store")
     if store is None:
         # Store instance not in memory (entry removed without a prior setup):

@@ -45,7 +45,8 @@ DEFAULT_SCAN_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
 DEFAULT_SCAN_MODEL = "glm-4.5v"
 
 SCAN_WEBHOOK_NAME = "Stockroom 扫描入库"
-SCAN_MAX_IMAGE_BYTES = 15 * 1024 * 1024
+# Keep under HA's 16MiB request cap even on the JSON+base64 path (×4/3).
+SCAN_MAX_IMAGE_BYTES = 12 * 1024 * 1024
 SCAN_MAX_SUGGESTIONS = 20
 SCAN_MAX_QUEUE = 50
 SCAN_TIMEOUT_SECONDS = 60

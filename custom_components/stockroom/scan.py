@@ -12,6 +12,10 @@ Transport facts verified against HA 2026.1.3 core source:
 - Companion notification buttons come back as the
   ``mobile_app_notification_action`` event with ``event.data["action"]`` —
   no pre-registration required anywhere.
+- ``mobile_app.util`` is imported lazily inside the notify path: importing
+  the module at file scope would drag in PyNaCl (mobile_app's own
+  requirement), breaking installs where the companion integration has never
+  set up.
 
 Photos are used for recognition only and never persisted.
 """
@@ -23,22 +27,20 @@ import base64
 import binascii
 import json
 import logging
+import math
 import secrets
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from aiohttp import ClientError, ClientSession, ClientTimeout, web
+from aiohttp import ClientError, ClientResponseError, ClientTimeout, web
 from homeassistant.components import notify
-from homeassistant.components.mobile_app.util import (
-    get_notify_service,
-    webhook_id_from_device_id,
-)
 from homeassistant.components.webhook import (
     async_generate_url,
     async_register,
     async_unregister,
 )
 from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
     ACTION_CONFIRM_PREFIX,
@@ -50,7 +52,12 @@ from .const import (
     CONF_SCAN_DEVICE_ID,
     CONF_SCAN_ENABLED,
     CONF_SCAN_MODEL,
+    DEFAULT_SCAN_BASE_URL,
+    DEFAULT_SCAN_MODEL,
     DEFAULT_UNITS,
+    EXTRA_COLOR,
+    EXTRA_FULL_WEIGHT_G,
+    EXTRA_MATERIAL,
     META_SCAN_PENDING,
     NOTIFICATION_ACTION_EVENT,
     SCAN_MAX_IMAGE_BYTES,
@@ -58,6 +65,7 @@ from .const import (
     SCAN_MAX_SUGGESTIONS,
     SCAN_PROMPT,
     SCAN_TIMEOUT_SECONDS,
+    SCAN_WEBHOOK_NAME,
 )
 from .storage import StockroomStore
 
@@ -69,6 +77,20 @@ _LOGGER = logging.getLogger(__name__)
 # One companion notification per suggestion beyond this is spam; the webhook
 # JSON response (and the scan_confirm service) cover the rest.
 _MAX_NOTIFICATIONS = 5
+
+# Accepted image containers for the base64 path (HEIC from iPhones must be
+# converted first — the vision APIs take JPEG/PNG/WebP).
+_IMAGE_MAGIC = (
+    (b"\xff\xd8", "JPEG"),
+    (b"\x89PNG\r\n\x1a\n", "PNG"),
+    (b"GIF8", "GIF"),
+    (b"RIFF", "WebP"),
+)
+
+
+def webhook_id_for_entry(entry_id: str) -> str:
+    """The stable per-entry webhook id (entry ids are unguessable UUIDs)."""
+    return f"stockroom-{entry_id}"
 
 
 def _strip_fences(text: str) -> str:
@@ -84,11 +106,67 @@ def _strip_fences(text: str) -> str:
 
 
 def _as_number(source: dict[str, Any], key: str) -> float:
-    """Read a numeric field defensively; unknown or junk means 0."""
+    """Read a numeric field defensively; unknown, junk or non-finite means 0."""
     try:
-        return max(0.0, float(source.get(key) or 0.0))
+        value = float(source.get(key) or 0.0)
     except (TypeError, ValueError):
         return 0.0
+    # The model can hallucinate Infinity/1e999; those would poison the store
+    # (orjson serializes them as null, breaking reads after a restart).
+    return value if math.isfinite(value) else 0.0
+
+
+def _looks_like_image(image: bytes) -> bool:
+    """Cheap container sniff: reject obvious non-images before the API call."""
+    return any(image.startswith(magic) for magic, _ in _IMAGE_MAGIC)
+
+
+async def extract_image_bytes(request: Any, hass: HomeAssistant | None = None) -> bytes:
+    """Pull the photo out of a JSON-base64 or multipart upload.
+
+    Raises ValueError with a caller-friendly message when there is no usable
+    image, it exceeds the size limit, or it does not look like an image.
+    """
+    if request.content_type == "application/json":
+        try:
+            payload = await request.json()
+        except (TypeError, ValueError) as err:
+            raise ValueError("请求体不是合法 JSON") from err
+        if not isinstance(payload, dict):
+            raise ValueError("请求体必须是 JSON 对象")
+        raw = payload.get("image_base64") or payload.get("image")
+        if not raw:
+            raise ValueError("缺少 image_base64 字段")
+        try:
+            image = base64.b64decode(str(raw), validate=False)
+        except (binascii.Error, ValueError) as err:
+            raise ValueError("image_base64 不是合法 base64") from err
+    else:
+        try:
+            async with asyncio.timeout(SCAN_TIMEOUT_SECONDS):
+                data = dict(await request.post())
+        except (TypeError, ValueError) as err:
+            raise ValueError("无法解析上传内容") from err
+        field = data.get("image")
+        if field is None:
+            raise ValueError("multipart 上传缺少 image 字段")
+        if hasattr(field, "file"):
+            read = field.file.read
+            image = await hass.async_add_executor_job(read) if hass else read()
+        elif isinstance(field, bytes):
+            image = field
+        else:
+            try:
+                image = base64.b64decode(str(field), validate=False)
+            except (binascii.Error, ValueError) as err:
+                raise ValueError("image 字段既不是文件也不是 base64") from err
+    if not image:
+        raise ValueError("图片内容为空")
+    if len(image) > SCAN_MAX_IMAGE_BYTES:
+        raise ValueError(f"图片超过 {SCAN_MAX_IMAGE_BYTES // (1024 * 1024)}MB 上限")
+    if not _looks_like_image(image):
+        raise ValueError("内容不是可识别的图片（支持 JPEG/PNG/GIF/WebP；iPhone 请先转 JPEG）")
+    return image
 
 
 def parse_suggestions(content: str) -> list[dict[str, Any]]:
@@ -147,49 +225,6 @@ def parse_suggestions(content: str) -> list[dict[str, Any]]:
     return suggestions
 
 
-async def extract_image_bytes(request: Any) -> bytes:
-    """Pull the photo out of a JSON-base64 or multipart upload.
-
-    Raises ValueError with a caller-friendly message when there is no usable
-    image or it exceeds the size limit.
-    """
-    if request.content_type == "application/json":
-        try:
-            payload = await request.json()
-        except (TypeError, ValueError) as err:
-            raise ValueError("请求体不是合法 JSON") from err
-        raw = payload.get("image_base64") or payload.get("image")
-        if not raw:
-            raise ValueError("缺少 image_base64 字段")
-        try:
-            image = base64.b64decode(str(raw), validate=False)
-        except (binascii.Error, ValueError) as err:
-            raise ValueError("image_base64 不是合法 base64") from err
-    else:
-        try:
-            async with asyncio.timeout(SCAN_TIMEOUT_SECONDS):
-                data = dict(await request.post())
-        except (TypeError, ValueError) as err:
-            raise ValueError("无法解析上传内容") from err
-        field = data.get("image")
-        if field is None:
-            raise ValueError("multipart 上传缺少 image 字段")
-        if hasattr(field, "file"):
-            image = field.file.read()
-        elif isinstance(field, bytes):
-            image = field
-        else:
-            try:
-                image = base64.b64decode(str(field), validate=False)
-            except (binascii.Error, ValueError) as err:
-                raise ValueError("image 字段既不是文件也不是 base64") from err
-    if not image:
-        raise ValueError("图片内容为空")
-    if len(image) > SCAN_MAX_IMAGE_BYTES:
-        raise ValueError(f"图片超过 {SCAN_MAX_IMAGE_BYTES // (1024 * 1024)}MB 上限")
-    return image
-
-
 class ScanManager:
     """Per-entry scan pipeline: webhook → vision LLM → pending queue → notify."""
 
@@ -205,8 +240,7 @@ class ScanManager:
         self.entry = entry
         self.engine = engine
         self.store = store
-        self.webhook_id = f"stockroom-{entry.entry_id}"
-        self._session: ClientSession | None = None
+        self.webhook_id = webhook_id_for_entry(entry.entry_id)
         self._listeners: list[Any] = []
 
     # ------------------------------------------------------------------
@@ -218,19 +252,32 @@ class ScanManager:
 
     @property
     def webhook_url(self) -> str:
-        """Full webhook URL for the phone shortcut."""
-        return async_generate_url(self.hass, self.webhook_id)
+        """Full webhook URL for the phone shortcut — always the LAN address.
+
+        ``local_only=True`` swallows non-LAN requests, so advertising an
+        external URL (the ``async_generate_url`` default) would point the
+        shortcut at an endpoint that silently returns an empty 200.
+        """
+        return async_generate_url(
+            self.hass, self.webhook_id, allow_external=False, prefer_external=False
+        )
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
     def async_setup(self) -> list[Any]:
-        """Register the webhook and the notification-action listener."""
+        """Register the webhook and the notification-action listener.
+
+        Unregister first: a failed setup leaves the old handler registered
+        (HA never unloads a SETUP_ERROR entry), and a plain re-register would
+        raise ``ValueError: Handler is already defined!`` forever after.
+        """
+        async_unregister(self.hass, self.webhook_id)
         async_register(
             self.hass,
             "stockroom",
-            f"Stockroom 扫描 {self.engine.warehouse_name}",
+            f"{SCAN_WEBHOOK_NAME} {self.engine.warehouse_name}",
             self.webhook_id,
             self._handle_webhook,
             local_only=True,
@@ -242,14 +289,11 @@ class ScanManager:
 
     @callback
     def async_teardown(self) -> None:
-        """Unregister the webhook and listeners; close the HTTP session."""
+        """Unregister the webhook and listeners."""
         async_unregister(self.hass, self.webhook_id)
         for unsub in self._listeners:
             unsub()
         self._listeners.clear()
-        if self._session is not None and not self._session.closed:
-            self.hass.async_create_task(self._session.close())
-        self._session = None
 
     # ------------------------------------------------------------------
     # Webhook
@@ -260,7 +304,7 @@ class ScanManager:
     ) -> web.Response:
         """Receive a photo, recognize it, queue suggestions, notify."""
         try:
-            image = await extract_image_bytes(request)
+            image = await extract_image_bytes(request, hass)
         except ValueError as err:
             return web.json_response({"ok": False, "error": str(err)})
         if not self._opt(CONF_SCAN_ENABLED):
@@ -273,6 +317,14 @@ class ScanManager:
         except (TimeoutError, asyncio.TimeoutError):
             _LOGGER.warning("[%s] 识别请求超时", self.engine.warehouse_name)
             return web.json_response({"ok": False, "error": "识别超时"})
+        except ClientResponseError as err:
+            _LOGGER.warning(
+                "[%s] 识别服务返回 %s（检查 API key、配额与模型名）",
+                self.engine.warehouse_name, err.status,
+            )
+            return web.json_response(
+                {"ok": False, "error": f"识别服务返回 {err.status}：请检查 API key、配额或模型名"}
+            )
         except (ClientError, OSError) as err:
             _LOGGER.warning("[%s] 识别服务连接失败：%s", self.engine.warehouse_name, err)
             return web.json_response({"ok": False, "error": "识别服务连接失败"})
@@ -295,11 +347,12 @@ class ScanManager:
 
     async def _recognize(self, image: bytes) -> list[dict[str, Any]]:
         """Ask the configured vision model for item suggestions."""
-        if self._session is None or self._session.closed:
-            self._session = ClientSession(timeout=ClientTimeout(total=SCAN_TIMEOUT_SECONDS))
-        base_url = str(self._opt(CONF_SCAN_BASE_URL)).rstrip("/")
+        session = async_get_clientsession(self.hass)
+        base_url = str(
+            self._opt(CONF_SCAN_BASE_URL, DEFAULT_SCAN_BASE_URL)
+        ).rstrip("/") or DEFAULT_SCAN_BASE_URL
         payload = {
-            "model": self._opt(CONF_SCAN_MODEL),
+            "model": self._opt(CONF_SCAN_MODEL, DEFAULT_SCAN_MODEL),
             "messages": [
                 {
                     "role": "user",
@@ -316,8 +369,11 @@ class ScanManager:
             ],
         }
         headers = {"Authorization": f"Bearer {self._opt(CONF_SCAN_API_KEY)}"}
-        async with self._session.post(
-            f"{base_url}/chat/completions", json=payload, headers=headers
+        async with session.post(
+            f"{base_url}/chat/completions",
+            json=payload,
+            headers=headers,
+            timeout=ClientTimeout(total=SCAN_TIMEOUT_SECONDS),
         ) as resp:
             resp.raise_for_status()
             data = await resp.json()
@@ -340,7 +396,7 @@ class ScanManager:
         now = datetime.now(UTC).isoformat()
         queued: list[dict[str, Any]] = []
         for suggestion in suggestions:
-            sid = secrets.token_hex(4)
+            sid = secrets.token_hex(8)
             entry = {"id": sid, "created_at": now, **suggestion}
             bucket[sid] = entry
             queued.append(entry)
@@ -358,7 +414,16 @@ class ScanManager:
         if suggestion is None:
             return None
         fields = {key: value for key, value in suggestion.items() if key not in ("id", "created_at")}
-        fields.update({key: value for key, value in (overrides or {}).items() if value is not None})
+        overrides = dict(overrides or {})
+        extra = dict(fields.get("extra") or {})
+        for key in (EXTRA_MATERIAL, EXTRA_COLOR, EXTRA_FULL_WEIGHT_G):
+            if overrides.get(key) is not None:
+                extra[key] = overrides.pop(key)
+        fields.update({key: value for key, value in overrides.items() if value is not None})
+        if extra:
+            fields["extra"] = extra
+        else:
+            fields.pop("extra", None)
         try:
             item = self.engine.add_item(
                 name=fields["name"],
@@ -399,6 +464,19 @@ class ScanManager:
         if not device_id:
             return
         try:
+            # Lazy import: the module scope of mobile_app pulls PyNaCl, which
+            # only exists when the companion integration has been set up.
+            from homeassistant.components.mobile_app.util import (
+                get_notify_service,
+                webhook_id_from_device_id,
+            )
+        except ImportError:
+            _LOGGER.warning(
+                "[%s] mobile_app 集成不可用，跳过确认通知（可用 scan_confirm 服务或捷径返回值确认）",
+                self.engine.warehouse_name,
+            )
+            return
+        try:
             webhook_id = webhook_id_from_device_id(self.hass, device_id)
             service_name = get_notify_service(self.hass, webhook_id) if webhook_id else None
         except (KeyError, AttributeError):
@@ -435,15 +513,23 @@ class ScanManager:
         action = str(event.data.get("action") or "")
         if action.startswith(ACTION_CONFIRM_PREFIX):
             sid = action[len(ACTION_CONFIRM_PREFIX) :]
-            if sid in self.queue():
-                item = self.confirm(sid)
-                if item is not None:
-                    _LOGGER.info(
-                        "[%s] 通知确认入库 %s（%s %s）",
-                        self.engine.warehouse_name, item["id"],
-                        item["quantity"], item["unit"],
-                    )
+            if sid not in self.queue():
+                _LOGGER.debug(
+                    "[%s] 确认按钮指向不存在/已处理的建议 %s", self.engine.warehouse_name, sid
+                )
+                return
+            item = self.confirm(sid)
+            if item is not None:
+                _LOGGER.info(
+                    "[%s] 通知确认入库 %s（%s %s）",
+                    self.engine.warehouse_name, item["id"],
+                    item["quantity"], item["unit"],
+                )
         elif action.startswith(ACTION_DISMISS_PREFIX):
             sid = action[len(ACTION_DISMISS_PREFIX) :]
             if self.dismiss(sid):
                 _LOGGER.info("[%s] 通知忽略建议 %s", self.engine.warehouse_name, sid)
+            else:
+                _LOGGER.debug(
+                    "[%s] 忽略按钮指向不存在/已处理的建议 %s", self.engine.warehouse_name, sid
+                )

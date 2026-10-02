@@ -137,10 +137,14 @@ if _INSTALL_STUBS:
             raise ValueError("must be >= 0")
         return number
 
+    def _cv_entry_only_schema(domain):
+        return lambda config: config
+
     _module(
         "homeassistant.helpers.config_validation",
         string=_cv_string,
         positive_float=_cv_positive_float,
+        config_entry_only_config_schema=_cv_entry_only_schema,
     )
     _module(
         "homeassistant.helpers.device_registry",

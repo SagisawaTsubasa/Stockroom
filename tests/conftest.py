@@ -113,6 +113,10 @@ if _INSTALL_STUBS:
         "homeassistant.helpers.aiohttp_client",
         async_get_clientsession=lambda hass: object(),
     )
+    _module(
+        "homeassistant.helpers.network",
+        NoURLAvailableError=type("NoURLAvailableError", (Exception,), {}),
+    )
 
     class _ConfigFlow:
         # Real ConfigFlow consumes domain=/title= in __init_subclass__.

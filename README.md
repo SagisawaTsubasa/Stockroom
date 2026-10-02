@@ -150,7 +150,7 @@ automation:
 选项里开启「拍照扫描入库」后，把照片 POST 到 webhook 即可获得条目建议：
 
 1. **配置**：集成选项 → 开启扫描 → 填 OpenAI 兼容端点（默认智谱 `https://open.bigmodel.cn/api/paas/v4` + 模型 `glm-4.5v`）、API Key；可选选一台装了 HA 伴侣 App 的手机作为「确认手机」
-2. **webhook 地址**：两个汇总传感器的 `scan_webhook_url` 属性（永远给内网地址），形如 `http://<HA内网地址>:8123/api/webhook/stockroom-<entry_id>`；webhook 仅限局域网访问（手机不在家时需自行走回家网络并改集成的 `local_only` 设置）
+2. **webhook 地址**：两个汇总传感器的 `scan_webhook_url` 属性（永远给内网地址），形如 `http://<HA内网地址>:8123/api/webhook/stockroom-<entry_id>`；webhook 仅限局域网访问（`local_only` 为内置行为，手机不在家时需走回家网络/VPN）
 3. **手机端**（iOS 快捷指令示例）：
    - 拍照（或选相册）→ 「Base64 编码」
    - 「获取 URL 内容」：POST，JSON 体 `{"image_base64": "<上一步输出>"}`

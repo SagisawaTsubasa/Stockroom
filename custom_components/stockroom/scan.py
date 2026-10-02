@@ -41,6 +41,7 @@ from homeassistant.components.webhook import (
 )
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.network import NoURLAvailableError
 
 from .const import (
     ACTION_CONFIRM_PREFIX,
@@ -78,16 +79,6 @@ _LOGGER = logging.getLogger(__name__)
 # JSON response (and the scan_confirm service) cover the rest.
 _MAX_NOTIFICATIONS = 5
 
-# Accepted image containers for the base64 path (HEIC from iPhones must be
-# converted first — the vision APIs take JPEG/PNG/WebP).
-_IMAGE_MAGIC = (
-    (b"\xff\xd8", "JPEG"),
-    (b"\x89PNG\r\n\x1a\n", "PNG"),
-    (b"GIF8", "GIF"),
-    (b"RIFF", "WebP"),
-)
-
-
 def webhook_id_for_entry(entry_id: str) -> str:
     """The stable per-entry webhook id (entry ids are unguessable UUIDs)."""
     return f"stockroom-{entry_id}"
@@ -111,14 +102,26 @@ def _as_number(source: dict[str, Any], key: str) -> float:
         value = float(source.get(key) or 0.0)
     except (TypeError, ValueError):
         return 0.0
-    # The model can hallucinate Infinity/1e999; those would poison the store
-    # (orjson serializes them as null, breaking reads after a restart).
-    return value if math.isfinite(value) else 0.0
+    # The model can hallucinate Infinity/1e999 (poisons the store: orjson
+    # serializes them as null) and negative thresholds (an item could then
+    # never go low-stock) — clamp both to sane values.
+    return max(0.0, value) if math.isfinite(value) else 0.0
 
 
-def _looks_like_image(image: bytes) -> bool:
-    """Cheap container sniff: reject obvious non-images before the API call."""
-    return any(image.startswith(magic) for magic, _ in _IMAGE_MAGIC)
+def sniff_image_kind(image: bytes) -> str | None:
+    """Return a MIME image subtype for the container, or None if unknown.
+
+    ``RIFF`` alone would also match WAV/AVI, so WebP requires the magic size.
+    """
+    if image.startswith(b"\xff\xd8"):
+        return "jpeg"
+    if image.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if image.startswith(b"GIF8"):
+        return "gif"
+    if len(image) >= 12 and image.startswith(b"RIFF") and image[8:12] == b"WEBP":
+        return "webp"
+    return None
 
 
 async def extract_image_bytes(request: Any, hass: HomeAssistant | None = None) -> bytes:
@@ -164,7 +167,7 @@ async def extract_image_bytes(request: Any, hass: HomeAssistant | None = None) -
         raise ValueError("图片内容为空")
     if len(image) > SCAN_MAX_IMAGE_BYTES:
         raise ValueError(f"图片超过 {SCAN_MAX_IMAGE_BYTES // (1024 * 1024)}MB 上限")
-    if not _looks_like_image(image):
+    if sniff_image_kind(image) is None:
         raise ValueError("内容不是可识别的图片（支持 JPEG/PNG/GIF/WebP；iPhone 请先转 JPEG）")
     return image
 
@@ -256,11 +259,21 @@ class ScanManager:
 
         ``local_only=True`` swallows non-LAN requests, so advertising an
         external URL (the ``async_generate_url`` default) would point the
-        shortcut at an endpoint that silently returns an empty 200.
+        shortcut at an endpoint that silently returns an empty 200. On
+        SSL-only instances with no internal URL configured there is no LAN
+        address at all — return an empty string instead of failing setup.
         """
-        return async_generate_url(
-            self.hass, self.webhook_id, allow_external=False, prefer_external=False
-        )
+        try:
+            return async_generate_url(
+                self.hass, self.webhook_id, allow_external=False, prefer_external=False
+            )
+        except NoURLAvailableError:
+            _LOGGER.warning(
+                "[%s] 找不到可用的内网地址（use_ssl 且未配 internal_url？），"
+                "webhook 地址暂不可展示；拍照扫描功能本身不受影响",
+                self.engine.warehouse_name,
+            )
+            return ""
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -351,6 +364,9 @@ class ScanManager:
         base_url = str(
             self._opt(CONF_SCAN_BASE_URL, DEFAULT_SCAN_BASE_URL)
         ).rstrip("/") or DEFAULT_SCAN_BASE_URL
+        # Declare the actual container type: strict endpoints validate the
+        # declared MIME, and a PNG announced as JPEG decodes to garbage.
+        mime_kind = sniff_image_kind(image) or "jpeg"
         payload = {
             "model": self._opt(CONF_SCAN_MODEL, DEFAULT_SCAN_MODEL),
             "messages": [
@@ -360,7 +376,7 @@ class ScanManager:
                         {
                             "type": "image_url",
                             "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64.b64encode(image).decode('ascii')}"
+                                "url": f"data:image/{mime_kind};base64,{base64.b64encode(image).decode('ascii')}"
                             },
                         },
                         {"type": "text", "text": SCAN_PROMPT},

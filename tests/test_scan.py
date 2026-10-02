@@ -105,6 +105,16 @@ def test_parse_suggestions_rejects_non_finite_numbers():
     assert out[0]["quantity"] == 0.0
 
 
+def test_parse_suggestions_negative_numbers_clamped():
+    """负数阈值会让条目永远不报低库存——识别层直接钳 0。"""
+    out = parse_suggestions(
+        '[{"name": "X", "quantity": -5, "low_threshold": -10, "full_weight_g": -1}]'
+    )
+    assert out[0]["quantity"] == 0.0
+    assert out[0]["low_threshold"] == 0.0
+    assert "extra" not in out[0]  # 负的满卷克重钳 0 后按"无此字段"处理
+
+
 # ----------------------------------------------------------------------
 # extract_image_bytes
 # ----------------------------------------------------------------------

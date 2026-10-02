@@ -100,15 +100,16 @@ class StockroomEntity(Entity):
             )
         )
 
+    @callback
     def _handle_update(self) -> None:
         """Refresh state on engine broadcasts.
 
-        Dispatcher senders may run outside the event loop (e.g. service
-        contexts that HA routes through executor threads), and HA 2026
-        hard-errors ``async_write_ha_state`` from non-loop threads — hop to
-        the loop first (a no-op deferral when already on it).
+        Must be ``@callback``: the dispatcher runs non-callback targets via
+        ``loop.run_in_executor`` (HassJobType.Executor), and HA 2026 raises
+        on ``async_write_ha_state`` from non-loop threads — that was the
+        root cause of entities never updating, not the sender's thread.
         """
-        self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
+        self.async_write_ha_state()
 
 
 class StockroomSummaryEntity(Entity):
@@ -139,6 +140,7 @@ class StockroomSummaryEntity(Entity):
             )
         )
 
+    @callback
     def _handle_update(self) -> None:
-        """Refresh state on engine broadcasts (hop to the loop if needed)."""
-        self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
+        """Refresh state on engine broadcasts (must stay @callback, see above)."""
+        self.async_write_ha_state()

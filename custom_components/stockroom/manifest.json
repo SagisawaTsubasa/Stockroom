@@ -1,0 +1,14 @@
+{
+  "codeowners": [
+    "@SagisawaTsubasa"
+  ],
+  "config_flow": true,
+  "documentation": "https://github.com/SagisawaTsubasa/Stockroom",
+  "domain": "stockroom",
+  "integration_type": "hub",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/SagisawaTsubasa/Stockroom/issues",
+  "name": "Stockroom 仓储盘点",
+  "requirements": [],
+  "version": "0.1.0"
+}

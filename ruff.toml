@@ -1,0 +1,4 @@
+# Keep `custom_components.*` imports classified as first-party regardless of
+# the working directory ruff runs from.
+[lint.isort]
+known-first-party = ["custom_components"]

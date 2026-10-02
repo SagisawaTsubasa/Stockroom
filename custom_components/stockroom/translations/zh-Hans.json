@@ -1,0 +1,62 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Stockroom 仓储盘点",
+        "description": "创建一个虚拟库存仓库，用于 FDM 3D 打印耗材与五金件盘点。允许创建多个仓库。",
+        "data": {
+          "warehouse_name": "仓库名称"
+        },
+        "data_description": {
+          "warehouse_name": "与现有仓库同名只会给出提醒；再次提交即可确认创建。"
+        }
+      }
+    },
+    "error": {
+      "duplicate_name": "已存在同名仓库。如确需创建，请再次提交。"
+    },
+    "abort": {}
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Stockroom 选项",
+        "data": {
+          "default_low_threshold": "默认低库存阈值",
+          "summary_by_category": "汇总按分类拆分",
+          "bambu_tray_entities": "Bambu Lab 料盘实体"
+        },
+        "data_description": {
+          "default_low_threshold": "add_item 服务未指定 low_threshold 时使用。",
+          "summary_by_category": "开启后两个汇总传感器会以属性形式给出分类明细。",
+          "bambu_tray_entities": "选择需要自动扣料的拓竹 AMS 料盘实体；打印完成后按分盘克数自动扣减。AMS HT 与外挂盘暂不支持。留空则不启用。"
+        }
+      },
+      "ams_map": {
+        "title": "把料盘映射到库存条目",
+        "description": "为每个选中的料盘实体选择对应的库存条目。V1 只按 AMS 分盘克数扣减（AMS HT 与外挂盘暂不支持）；被映射的耗材条目建议以 g 记账。"
+      }
+    },
+    "error": {
+      "unknown_item": "该条目 id 在本仓库中不存在——请先用 add_item 服务创建，或从下拉列表中选择。"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "item_quantity": {
+        "name": "{item} 库存量"
+      },
+      "summary_total_items": {
+        "name": "条目总数"
+      },
+      "summary_low_stock": {
+        "name": "低库存条目数"
+      }
+    },
+    "binary_sensor": {
+      "item_low_stock": {
+        "name": "{item} 低库存"
+      }
+    }
+  }
+}

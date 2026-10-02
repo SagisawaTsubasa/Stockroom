@@ -1,0 +1,62 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Stockroom",
+        "description": "Create a virtual inventory warehouse for 3D printing consumables and hardware. Multiple warehouses are allowed.",
+        "data": {
+          "warehouse_name": "Warehouse name"
+        },
+        "data_description": {
+          "warehouse_name": "An identical warehouse name only triggers a reminder; submit again to confirm."
+        }
+      }
+    },
+    "error": {
+      "duplicate_name": "A warehouse with this name already exists. You can submit again to create it anyway."
+    },
+    "abort": {}
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Stockroom options",
+        "data": {
+          "default_low_threshold": "Default low-stock threshold",
+          "summary_by_category": "Break summary down by category",
+          "bambu_tray_entities": "Bambu Lab tray sensors"
+        },
+        "data_description": {
+          "default_low_threshold": "Used when the add_item service does not specify low_threshold.",
+          "summary_by_category": "When enabled, the two summary sensors expose per-category counts as attributes.",
+          "bambu_tray_entities": "Select the Bambu Lab AMS tray sensors that should be deducted automatically after each finished print. AMS HT and the external spool are not supported in V1. Leave empty to disable."
+        }
+      },
+      "ams_map": {
+        "title": "Map trays to stockroom items",
+        "description": "For every selected tray sensor, choose which item it feeds. V1 deducts AMS tray grams only (AMS HT and the external spool are not supported); track mapped filament items in grams for correct results."
+      }
+    },
+    "error": {
+      "unknown_item": "That item id does not exist in this warehouse yet — create it with the add_item service or pick one from the dropdown."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "item_quantity": {
+        "name": "{item} stock"
+      },
+      "summary_total_items": {
+        "name": "Total items"
+      },
+      "summary_low_stock": {
+        "name": "Low stock items"
+      }
+    },
+    "binary_sensor": {
+      "item_low_stock": {
+        "name": "{item} low stock"
+      }
+    }
+  }
+}

@@ -35,6 +35,10 @@ from .storage import StockroomStore
 
 _LOGGER = logging.getLogger(__name__)
 
+# This integration is set up exclusively from config entries (hassfest
+# requires an explicit schema when async_setup is defined).
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
 PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR]
 
 # consume/restock must move real stock: 0 passes cv.positive_float (Range

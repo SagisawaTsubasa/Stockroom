@@ -19,10 +19,11 @@ Home Assistant 自定义集成：面向 **FDM 3D 打印耗材（PLA/PETG/ABS/TPU
 - 每个配置项 = 一个虚拟仓库设备，条目（item）数量不限，动态增删实体
 - 三类条目：`filament`（打印耗材）/ `screw`（螺丝紧固件）/ `other`（其它五金件）
 - 条目字段：名称、分类、数量、单位（颗/个/卷/kg/g…）、低库存线、存放位置、耗材附加属性（材质/颜色/满卷净重）、最近盘点时间、最近变动时间
-- 六个领域级服务：`add_item` / `remove_item` / `consume` / `restock` / `stocktake` / `set_threshold`
+- 六个领域级服务：`add_item` / `remove_item` / `consume` / `restock` / `stocktake` / `set_threshold`，另有扫描确认 `scan_confirm` / `scan_dismiss`
 - 每次变动：实体即时刷新 + 持久化 + 向事件总线发 `stockroom_item_changed`（自动化可订阅；集成自身**从不主动发通知**）
 - 扣减到负数自动钳为 0 并记日志；`stocktake` 校准为实际清点值并记录时间戳
 - 拓竹 AMS 自动扣料：打印完成（`finish`）后按 `print_weight` 的分盘克数逐盘扣减对应条目，带任务级幂等去重
+- **拍照扫描入库**（可选）：手机拍照 POST 到集成 webhook → 视觉模型识别 → 通知按钮一键确认入库
 
 ## 实体
 
@@ -35,7 +36,7 @@ Home Assistant 自定义集成：面向 **FDM 3D 打印耗材（PLA/PETG/ABS/TPU
 | `sensor.<仓库>_total_items` | 条目总数 |
 | `sensor.<仓库>_low_stock_items` | 低库存条目数 |
 
-选项里开启「汇总按分类拆分」后，两个汇总传感器会以 `by_category` / `low_by_category` 属性给出分类明细。
+选项里开启「汇总按分类拆分」后，两个汇总传感器会以 `by_category` / `low_by_category` 属性给出分类明细；开启「拍照扫描入库」后，条目总数传感器还会给出 `scan_webhook_url` 属性（手机捷径要填的完整地址）。
 
 ## 安装（HACS）
 
@@ -144,6 +145,28 @@ automation:
 
 `stockroom_item_changed` 事件数据：`entry_id`、`item_id`、`action`（add/remove/consume/restock/stocktake/set_threshold）、`new_quantity`、可选 `note`。
 
+## 拍照扫描入库（V0.2.0）
+
+选项里开启「拍照扫描入库」后，把照片 POST 到 webhook 即可获得条目建议：
+
+1. **配置**：集成选项 → 开启扫描 → 填 OpenAI 兼容端点（默认智谱 `https://open.bigmodel.cn/api/paas/v4` + 模型 `glm-4.5v`）、API Key；可选选一台装了 HA 伴侣 App 的手机作为「确认手机」
+2. **webhook 地址**：条目总数传感器的 `scan_webhook_url` 属性，形如 `http://<HA地址>:8123/api/webhook/stockroom-<entry_id>`（仅限局域网访问）
+3. **手机端**（iOS 快捷指令示例）：
+   - 拍照（或选相册）→ 「Base64 编码」
+   - 「获取 URL 内容」：POST，JSON 体 `{"image_base64": "<上一步输出>"}`
+   - 返回值就是识别建议 JSON；同时集成会发带「✓ 入库 / ✕ 忽略」按钮的通知到确认手机
+4. **确认**：点通知按钮（按建议值直接入库），或调服务确认并可覆盖字段：
+
+```yaml
+action: stockroom.scan_confirm
+data:
+  suggestion: "<建议ID>"
+  quantity: 250      # 可选，覆盖识别值
+  location: 柜2      # 可选
+```
+
+**识别边界**（诚实预期）：拍**标签/包装/收纳盒**（品牌、规格、色号、净重）最可靠；散装螺丝的规格视觉上无法可靠分辨——prompt 已要求模型把不确定的规格猜测写进名称并把数量置 0，确认时记得核对。照片仅用于本次识别，不落盘不持久化。待确认队列每仓库上限 50 条（超出淘汰最旧），webhook 请求上限 15MB。
+
 ## AMS 自动扣料说明
 
 针对 greghesp/ha-bambulab 集成（domain `bambu_lab`），在 HA 2026.1.3 + P1S 上实测：
@@ -178,6 +201,12 @@ A：每台打印机的料盘各自映射即可；幂等记录按「仓库 | 打�
 A：自动扣料时记 WARNING 提示映射悬空，不会误扣其他条目；重新打印前请到集成选项里更新映射。选项里手输的条目 id 会在保存时校验，不存在的 id 直接报错。
 
 ## Changelog
+
+### 0.2.0（2026-10-02）
+
+- **拍照扫描入库**：webhook 收照片 → OpenAI 兼容视觉模型识别 → 待确认队列 → 伴侣 App 通知按钮 / `scan_confirm`、`scan_dismiss` 服务确认；照片即用即弃
+- 条目总数传感器新增 `scan_webhook_url` 属性
+- 修复：动态实体 diff 未登记 known 导致的重复添加日志与删除失效（两轮跨模型审查收口）
 
 ### 0.1.0（2026-10-02）
 

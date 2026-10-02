@@ -15,6 +15,8 @@ from homeassistant.config_entries import (
 from homeassistant.core import callback
 from homeassistant.helpers.selector import (
     BooleanSelector,
+    DeviceSelector,
+    DeviceSelectorConfig,
     EntitySelector,
     EntitySelectorConfig,
     NumberSelector,
@@ -24,15 +26,25 @@ from homeassistant.helpers.selector import (
     SelectSelectorConfig,
     SelectSelectorMode,
     TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
 )
 
 from .const import (
     CONF_BAMBU_TRAY_ENTITIES,
     CONF_BAMBU_TRAY_MAP,
     CONF_DEFAULT_LOW_THRESHOLD,
+    CONF_SCAN_API_KEY,
+    CONF_SCAN_BASE_URL,
+    CONF_SCAN_DEVICE_ID,
+    CONF_SCAN_ENABLED,
+    CONF_SCAN_MODEL,
     CONF_SUMMARY_BY_CATEGORY,
     CONF_WAREHOUSE_NAME,
     DEFAULT_LOW_THRESHOLD,
+    DEFAULT_SCAN_BASE_URL,
+    DEFAULT_SCAN_ENABLED,
+    DEFAULT_SCAN_MODEL,
     DEFAULT_SUMMARY_BY_CATEGORY,
     DEFAULT_WAREHOUSE_NAME,
     DOMAIN,
@@ -138,6 +150,28 @@ class StockroomOptionsFlow(OptionsFlow):
                         self._opt(entry, CONF_SUMMARY_BY_CATEGORY, DEFAULT_SUMMARY_BY_CATEGORY)
                     ),
                 ): BooleanSelector(),
+                vol.Required(
+                    CONF_SCAN_ENABLED,
+                    default=bool(self._opt(entry, CONF_SCAN_ENABLED, DEFAULT_SCAN_ENABLED)),
+                ): BooleanSelector(),
+                vol.Optional(
+                    CONF_SCAN_DEVICE_ID,
+                    description={"suggested_value": self._opt(entry, CONF_SCAN_DEVICE_ID, "")},
+                ): DeviceSelector(DeviceSelectorConfig(integration="mobile_app")),
+                vol.Optional(
+                    CONF_SCAN_BASE_URL,
+                    description={
+                        "suggested_value": self._opt(entry, CONF_SCAN_BASE_URL, DEFAULT_SCAN_BASE_URL)
+                    },
+                ): TextSelector(),
+                vol.Optional(
+                    CONF_SCAN_API_KEY,
+                    description={"suggested_value": self._opt(entry, CONF_SCAN_API_KEY, "")},
+                ): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
+                vol.Optional(
+                    CONF_SCAN_MODEL,
+                    description={"suggested_value": self._opt(entry, CONF_SCAN_MODEL, DEFAULT_SCAN_MODEL)},
+                ): TextSelector(),
                 vol.Optional(
                     CONF_BAMBU_TRAY_ENTITIES,
                     description={"suggested_value": sorted(current_map)},
@@ -214,6 +248,7 @@ class StockroomOptionsFlow(OptionsFlow):
         self, base_input: dict[str, Any], mapping: dict[str, str]
     ) -> ConfigFlowResult:
         """Assemble the final options payload."""
+        base_url = str(base_input.get(CONF_SCAN_BASE_URL) or "").strip().rstrip("/")
         options = {
             CONF_DEFAULT_LOW_THRESHOLD: float(
                 base_input.get(CONF_DEFAULT_LOW_THRESHOLD, DEFAULT_LOW_THRESHOLD)
@@ -221,6 +256,18 @@ class StockroomOptionsFlow(OptionsFlow):
             CONF_SUMMARY_BY_CATEGORY: bool(
                 base_input.get(CONF_SUMMARY_BY_CATEGORY, DEFAULT_SUMMARY_BY_CATEGORY)
             ),
+            CONF_SCAN_ENABLED: bool(
+                base_input.get(CONF_SCAN_ENABLED, DEFAULT_SCAN_ENABLED)
+            ),
+            CONF_SCAN_DEVICE_ID: str(
+                base_input.get(CONF_SCAN_DEVICE_ID) or ""
+            ),
+            CONF_SCAN_BASE_URL: base_url or DEFAULT_SCAN_BASE_URL,
+            CONF_SCAN_API_KEY: str(base_input.get(CONF_SCAN_API_KEY) or ""),
+            CONF_SCAN_MODEL: str(
+                base_input.get(CONF_SCAN_MODEL) or ""
+            ).strip()
+            or DEFAULT_SCAN_MODEL,
             CONF_BAMBU_TRAY_MAP: mapping,
         }
         return self.async_create_entry(data=options)

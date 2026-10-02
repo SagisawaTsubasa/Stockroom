@@ -24,11 +24,21 @@
         "data": {
           "default_low_threshold": "默认低库存阈值",
           "summary_by_category": "汇总按分类拆分",
+          "scan_enabled": "拍照扫描入库",
+          "scan_device_id": "确认手机",
+          "scan_base_url": "视觉 API 地址",
+          "scan_api_key": "视觉 API Key",
+          "scan_model": "视觉模型",
           "bambu_tray_entities": "Bambu Lab 料盘实体"
         },
         "data_description": {
           "default_low_threshold": "add_item 服务未指定 low_threshold 时使用。",
           "summary_by_category": "开启后两个汇总传感器会以属性形式给出分类明细。",
+          "scan_enabled": "启用后向条目 webhook POST 照片即可获得条目建议，通过通知按钮或 scan_confirm 服务确认入库；webhook 完整地址见条目总数传感器的 scan_webhook_url 属性。",
+          "scan_device_id": "接收确认/忽略通知按钮的手机（装 HA 伴侣 App）。可选——webhook 响应里始终带识别结果。",
+          "scan_base_url": "OpenAI 兼容端点地址，如 https://open.bigmodel.cn/api/paas/v4",
+          "scan_api_key": "视觉服务的 API Key（存在集成选项里，仅本地使用）。",
+          "scan_model": "视觉模型名，如 glm-4.5v",
           "bambu_tray_entities": "选择需要自动扣料的拓竹 AMS 料盘实体；打印完成后按分盘克数自动扣减。AMS HT 与外挂盘暂不支持。留空则不启用。"
         }
       },

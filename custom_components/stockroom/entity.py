@@ -101,8 +101,14 @@ class StockroomEntity(Entity):
         )
 
     def _handle_update(self) -> None:
-        """Refresh state on engine broadcasts."""
-        self.async_write_ha_state()
+        """Refresh state on engine broadcasts.
+
+        Dispatcher senders may run outside the event loop (e.g. service
+        contexts that HA routes through executor threads), and HA 2026
+        hard-errors ``async_write_ha_state`` from non-loop threads — hop to
+        the loop first (a no-op deferral when already on it).
+        """
+        self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
 
 
 class StockroomSummaryEntity(Entity):
@@ -134,5 +140,5 @@ class StockroomSummaryEntity(Entity):
         )
 
     def _handle_update(self) -> None:
-        """Refresh state on engine broadcasts."""
-        self.async_write_ha_state()
+        """Refresh state on engine broadcasts (hop to the loop if needed)."""
+        self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)

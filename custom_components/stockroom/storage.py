@@ -122,3 +122,16 @@ class StockroomStore:
 def last_deduct_records(store: StockroomStore) -> dict[str, Any]:
     """Return the shared per-printer idempotency record table."""
     return store.get_meta(META_LAST_DEDUCT)
+
+
+def schedule_store_flush(hass: HomeAssistant, store: StockroomStore) -> None:
+    """Ask for a flush from any thread.
+
+    On the event loop this is a plain task; from executor threads
+    (``async_create_task`` would raise there) it hops over via
+    ``run_coroutine_threadsafe``.
+    """
+    try:
+        hass.async_create_task(store.async_flush())
+    except RuntimeError:
+        asyncio.run_coroutine_threadsafe(store.async_flush(), hass.loop)

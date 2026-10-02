@@ -3,6 +3,7 @@ low-stock judgement, change events and Bambu AMS idempotent deduction."""
 
 from __future__ import annotations
 
+import types
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -55,6 +56,10 @@ class FakeHass:
         self.bus = FakeBus()
         self.states = FakeStates(states)
         self.tasks: list = []
+        # loop 桩：call_soon_threadsafe 原地执行（与真实语义等价的单线程假设）
+        self.loop = types.SimpleNamespace(
+            call_soon_threadsafe=lambda cb, *args: cb(*args)
+        )
 
     def async_create_task(self, coro):
         self.tasks.append(coro)

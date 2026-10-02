@@ -68,7 +68,7 @@ from .const import (
     SCAN_TIMEOUT_SECONDS,
     SCAN_WEBHOOK_NAME,
 )
-from .storage import StockroomStore
+from .storage import StockroomStore, schedule_store_flush
 
 if TYPE_CHECKING:
     from .inventory import InventoryEngine
@@ -455,7 +455,7 @@ class ScanManager:
             self.queue()[sid] = suggestion
             raise
         self.store.mark_dirty(self.entry.entry_id)
-        self.hass.async_create_task(self.store.async_flush())
+        schedule_store_flush(self.hass, self.store)
         return item
 
     def dismiss(self, ref: str) -> int:

@@ -33,7 +33,7 @@ from .const import (
     SERVICE_STOCKTAKE,
 )
 from .inventory import InventoryEngine
-from .storage import StockroomStore
+from .storage import StockroomStore, schedule_store_flush
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -225,7 +225,7 @@ def _async_get_engine(hass: HomeAssistant, entry_id: str | None) -> InventoryEng
 
 def _schedule_flush(hass: HomeAssistant, engine: InventoryEngine) -> None:
     """Persist soon after a mutation (dirty-flag makes extra flushes cheap)."""
-    hass.async_create_task(engine.store.async_flush())
+    schedule_store_flush(hass, engine.store)
 
 
 def _async_register_services(hass: HomeAssistant) -> None:

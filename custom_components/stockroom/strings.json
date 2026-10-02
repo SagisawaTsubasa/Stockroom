@@ -24,11 +24,21 @@
         "data": {
           "default_low_threshold": "Default low-stock threshold",
           "summary_by_category": "Break summary down by category",
+          "scan_enabled": "Photo scan-to-stock",
+          "scan_device_id": "Confirmation phone",
+          "scan_base_url": "Vision API base URL",
+          "scan_api_key": "Vision API key",
+          "scan_model": "Vision model",
           "bambu_tray_entities": "Bambu Lab tray sensors"
         },
         "data_description": {
           "default_low_threshold": "Used when the add_item service does not specify low_threshold.",
           "summary_by_category": "When enabled, the two summary sensors expose per-category counts as attributes.",
+          "scan_enabled": "POST a photo to the entry webhook to get item suggestions, confirmed via notification buttons or the scan_confirm service.",
+          "scan_device_id": "Phone (HA companion app) that receives the confirm/dismiss notification buttons. Optional — the webhook response always carries the suggestions.",
+          "scan_base_url": "OpenAI-compatible endpoint base, e.g. https://open.bigmodel.cn/api/paas/v4",
+          "scan_api_key": "API key of the vision service (stored in the entry options).",
+          "scan_model": "Vision model name, e.g. glm-4.5v",
           "bambu_tray_entities": "Select the Bambu Lab AMS tray sensors that should be deducted automatically after each finished print. AMS HT and the external spool are not supported in V1. Leave empty to disable."
         }
       },

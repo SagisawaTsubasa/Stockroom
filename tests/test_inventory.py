@@ -452,6 +452,7 @@ def test_all_modules_import():
         "sensor",
         "binary_sensor",
         "config_flow",
+        "scan",
     ):
         importlib.import_module(f"custom_components.stockroom.{name}")
     importlib.import_module("custom_components.stockroom")

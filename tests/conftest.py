@@ -23,6 +23,14 @@ from typing import Any, Generic, TypeVar
 if not hasattr(_datetime, "UTC"):
     _datetime.UTC = timezone.utc  # type: ignore[attr-defined]
 
+# asyncio.timeout is 3.11+; shim for older local interpreters (tests never
+# exercise a real timeout, so a no-op context is enough).
+import asyncio as _asyncio
+import contextlib as _contextlib
+
+if not hasattr(_asyncio, "timeout"):
+    _asyncio.timeout = _contextlib.nullcontext  # type: ignore[attr-defined]
+
 # Make ``custom_components.stockroom`` importable from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -87,6 +95,19 @@ if _INSTALL_STUBS:
         BinarySensorEntity=_BinarySensorEntity,
         BinarySensorDeviceClass=types.SimpleNamespace(PROBLEM="problem"),
     )
+    # aiohttp surface used by scan.py at import time.
+    def _json_response(payload=None, *args, **kwargs):
+        import json as _json
+
+        return types.SimpleNamespace(status=200, text=_json.dumps(payload or {}))
+
+    _module(
+        "aiohttp",
+        ClientError=type("ClientError", (Exception,), {}),
+        ClientSession=type("ClientSession", (), {}),
+        ClientTimeout=lambda **kwargs: None,
+        web=types.SimpleNamespace(json_response=_json_response),
+    )
 
     class _ConfigFlow:
         # Real ConfigFlow consumes domain=/title= in __init_subclass__.
@@ -141,6 +162,21 @@ if _INSTALL_STUBS:
         return lambda config: config
 
     _module(
+        "homeassistant.components",
+        notify=types.SimpleNamespace(DOMAIN="notify", ATTR_TARGET="target"),
+    )
+    _module(
+        "homeassistant.components.webhook",
+        async_generate_url=lambda hass, webhook_id: f"http://localhost:8123/api/webhook/{webhook_id}",
+        async_register=lambda *args, **kwargs: None,
+        async_unregister=lambda *args, **kwargs: None,
+    )
+    _module(
+        "homeassistant.components.mobile_app.util",
+        get_notify_service=lambda hass, webhook_id: None,
+        webhook_id_from_device_id=lambda hass, device_id: None,
+    )
+    _module(
         "homeassistant.helpers.config_validation",
         string=_cv_string,
         positive_float=_cv_positive_float,
@@ -180,6 +216,8 @@ if _INSTALL_STUBS:
     _module(
         "homeassistant.helpers.selector",
         BooleanSelector=_accepts_anything("BooleanSelector"),
+        DeviceSelector=_accepts_anything("DeviceSelector"),
+        DeviceSelectorConfig=_accepts_anything("DeviceSelectorConfig"),
         EntitySelector=_accepts_anything("EntitySelector"),
         EntitySelectorConfig=_accepts_anything("EntitySelectorConfig"),
         NumberSelector=_accepts_anything("NumberSelector"),
@@ -189,5 +227,7 @@ if _INSTALL_STUBS:
         SelectSelectorConfig=_accepts_anything("SelectSelectorConfig"),
         SelectSelectorMode=types.SimpleNamespace(DROPDOWN="dropdown", LIST="list"),
         TextSelector=_accepts_anything("TextSelector"),
+        TextSelectorConfig=_accepts_anything("TextSelectorConfig"),
+        TextSelectorType=types.SimpleNamespace(PASSWORD="password"),
     )
     _module("homeassistant.helpers.storage", Store=_Store)

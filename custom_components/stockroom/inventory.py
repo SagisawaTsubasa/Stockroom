@@ -24,6 +24,7 @@ from .const import (
     CATEGORY_OTHER,
     CONF_BAMBU_TRAY_MAP,
     CONF_DEFAULT_LOW_THRESHOLD,
+    CONF_SCAN_ENABLED,
     CONF_SUMMARY_BY_CATEGORY,
     CONF_WAREHOUSE_NAME,
     DEFAULT_LOW_THRESHOLD,
@@ -35,6 +36,7 @@ from .const import (
     ITEM_UPDATED_AT,
     SIGNAL_ITEMS_UPDATED,
 )
+from .scan import ScanManager
 from .storage import StockroomStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -127,6 +129,7 @@ class InventoryEngine:
         self.items: dict[str, dict[str, Any]] = store.get_items(entry.entry_id)
         self._unsubs: list[Any] = []
         self._bambu: BambuDeductor | None = None
+        self._scan: ScanManager | None = None
 
     # ------------------------------------------------------------------
     # Config helpers (options override data)
@@ -155,11 +158,18 @@ class InventoryEngine:
     # ------------------------------------------------------------------
 
     async def async_setup(self) -> None:
-        """Start listeners: currently only the Bambu AMS deduction hook."""
+        """Start listeners: Bambu AMS deduction and the photo-scan webhook."""
         tray_map = self._opt(CONF_BAMBU_TRAY_MAP) or {}
         if tray_map:
             self._bambu = BambuDeductor(self.hass, self.entry, self, self.store, tray_map)
             self._unsubs.extend(self._bambu.async_setup())
+        if self._opt(CONF_SCAN_ENABLED):
+            self._scan = ScanManager(self.hass, self.entry, self, self.store)
+            self._unsubs.extend(self._scan.async_setup())
+            _LOGGER.info(
+                "[%s] 拍照扫描已启用，webhook：%s",
+                self.warehouse_name, self._scan.webhook_url,
+            )
 
     @callback
     def async_teardown(self) -> None:
@@ -168,6 +178,19 @@ class InventoryEngine:
             unsub()
         self._unsubs.clear()
         self._bambu = None
+        if self._scan is not None:
+            self._scan.async_teardown()
+            self._scan = None
+
+    @property
+    def scan(self) -> ScanManager | None:
+        """The scan manager when photo scanning is enabled."""
+        return self._scan
+
+    @property
+    def scan_webhook_url(self) -> str | None:
+        """Webhook URL for the phone shortcut, or None when scan is off."""
+        return self._scan.webhook_url if self._scan is not None else None
 
     # ------------------------------------------------------------------
     # Queries

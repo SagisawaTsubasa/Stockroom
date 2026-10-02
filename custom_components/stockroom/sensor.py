@@ -146,14 +146,16 @@ class _SummarySensor(StockroomSummaryEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
-        """Category breakdown when the option is enabled."""
+        """Category breakdown when the option is enabled; scan webhook URL."""
+        attributes: dict[str, Any] = {}
         counts = self._counts()
-        if "by_category" not in counts:
-            return None
-        return {
-            "by_category": counts["by_category"],
-            "low_by_category": counts.get("low_by_category", {}),
-        }
+        if "by_category" in counts:
+            attributes["by_category"] = counts["by_category"]
+            attributes["low_by_category"] = counts.get("low_by_category", {})
+        webhook_url = self._engine.scan_webhook_url
+        if webhook_url:
+            attributes["scan_webhook_url"] = webhook_url
+        return attributes or None
 
 
 class SummaryTotalSensor(_SummarySensor):

@@ -27,6 +27,8 @@ from .const import (
     SERVICE_CONSUME,
     SERVICE_REMOVE_ITEM,
     SERVICE_RESTOCK,
+    SERVICE_SCAN_CONFIRM,
+    SERVICE_SCAN_DISMISS,
     SERVICE_SET_THRESHOLD,
     SERVICE_STOCKTAKE,
 )
@@ -97,6 +99,33 @@ SET_THRESHOLD_SCHEMA = vol.Schema(
         vol.Required("threshold"): cv.positive_float,
     }
 )
+SCAN_CONFIRM_SCHEMA = vol.Schema(
+    {
+        vol.Optional("entry_id"): cv.string,
+        vol.Required("suggestion"): cv.string,
+        vol.Optional("name"): cv.string,
+        vol.Optional("quantity"): cv.positive_float,
+        vol.Optional("category"): vol.In(CATEGORIES),
+        vol.Optional("unit"): cv.string,
+        vol.Optional("low_threshold"): cv.positive_float,
+        vol.Optional("location"): cv.string,
+    }
+)
+SCAN_DISMISS_SCHEMA = vol.Schema(
+    {
+        vol.Optional("entry_id"): cv.string,
+        vol.Required("suggestion"): cv.string,
+    }
+)
+
+
+def _scan_overrides(call: ServiceCall) -> dict:
+    """Pick the suggestion-overriding fields out of a scan_confirm call."""
+    return {
+        key: call.data[key]
+        for key in ("name", "quantity", "category", "unit", "low_threshold", "location")
+        if call.data.get(key) is not None
+    }
 
 
 async def _async_get_store(hass: HomeAssistant) -> StockroomStore:
@@ -241,6 +270,51 @@ def _async_register_services(hass: HomeAssistant) -> None:
         engine.set_threshold(call.data["item"], call.data["threshold"])
         _schedule_flush(hass, engine)
 
+    def _require_scan(engine: InventoryEngine):
+        """Resolve the scan manager or fail with a clear message."""
+        scan = engine.scan
+        if scan is None:
+            raise HomeAssistantError(
+                "stockroom: 该仓库未启用拍照扫描（请在集成选项里开启并配置识别引擎）"
+            )
+        return scan
+
+    async def handle_scan_confirm(call: ServiceCall) -> None:
+        """Turn pending suggestion(s) into real items."""
+        engine = _async_get_engine(hass, call.data.get("entry_id"))
+        scan = _require_scan(engine)
+        ref = call.data["suggestion"]
+        overrides = _scan_overrides(call)
+        if ref == "all":
+            if overrides:
+                raise HomeAssistantError("stockroom: suggestion=all 时不能带字段覆盖")
+            sids = list(scan.queue())
+        else:
+            sids = [ref]
+        confirmed = []
+        for sid in sids:
+            item = scan.confirm(sid, overrides)
+            if item is None:
+                raise HomeAssistantError(f"stockroom: 扫描建议不存在或已处理：{sid}")
+            confirmed.append(item)
+        if confirmed:
+            _schedule_flush(hass, engine)
+            _LOGGER.info(
+                "[%s] 扫描入库 %d 个条目：%s",
+                engine.warehouse_name, len(confirmed),
+                ", ".join(item["id"] for item in confirmed),
+            )
+
+    async def handle_scan_dismiss(call: ServiceCall) -> None:
+        """Drop pending suggestion(s)."""
+        engine = _async_get_engine(hass, call.data.get("entry_id"))
+        scan = _require_scan(engine)
+        if not scan.dismiss(call.data["suggestion"]):
+            raise HomeAssistantError(
+                f"stockroom: 扫描建议不存在或已处理：{call.data['suggestion']}"
+            )
+        _schedule_flush(hass, engine)
+
     hass.services.async_register(
         DOMAIN, SERVICE_ADD_ITEM, handle_add_item, schema=ADD_ITEM_SCHEMA
     )
@@ -258,6 +332,12 @@ def _async_register_services(hass: HomeAssistant) -> None:
     )
     hass.services.async_register(
         DOMAIN, SERVICE_SET_THRESHOLD, handle_set_threshold, schema=SET_THRESHOLD_SCHEMA
+    )
+    hass.services.async_register(
+        DOMAIN, SERVICE_SCAN_CONFIRM, handle_scan_confirm, schema=SCAN_CONFIRM_SCHEMA
+    )
+    hass.services.async_register(
+        DOMAIN, SERVICE_SCAN_DISMISS, handle_scan_dismiss, schema=SCAN_DISMISS_SCHEMA
     )
 
 

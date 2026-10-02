@@ -230,3 +230,88 @@ set_threshold:
           max: 1000000000
           step: 0.01
           mode: box
+
+scan_confirm:
+  name: 扫描确认入库
+  description: 把拍照识别的待确认建议转为真实条目；suggestion 填建议 ID 或 all。可带字段覆盖建议值。
+  fields:
+    entry_id:
+      name: 配置项 ID
+      description: 配置了多个仓库时指定目标仓库；单仓库时可省略。
+      required: false
+      selector:
+        text:
+    suggestion:
+      name: 建议
+      description: 待确认建议的 ID（webhook 返回值或通知里），或 all 表示全部确认。
+      required: true
+      selector:
+        text:
+    name:
+      name: 名称
+      description: 可选；覆盖识别出的名称。
+      required: false
+      selector:
+        text:
+    quantity:
+      name: 数量
+      description: 可选；覆盖识别出的数量。
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 1000000000
+          step: 0.01
+          mode: box
+    category:
+      name: 分类
+      description: 可选；覆盖识别出的分类。
+      required: false
+      selector:
+        select:
+          options:
+            - value: filament
+              label: 打印耗材
+            - value: screw
+              label: 螺丝/紧固件
+            - value: other
+              label: 其它
+    unit:
+      name: 单位
+      description: 可选；覆盖识别出的单位。
+      required: false
+      selector:
+        text:
+    low_threshold:
+      name: 低库存线
+      description: 可选；覆盖识别出的低库存线。
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 1000000000
+          step: 0.01
+          mode: box
+    location:
+      name: 存放位置
+      description: 可选；覆盖识别出的位置。
+      required: false
+      selector:
+        text:
+
+scan_dismiss:
+  name: 扫描忽略建议
+  description: 丢弃拍照识别的待确认建议；suggestion 填建议 ID 或 all。
+  fields:
+    entry_id:
+      name: 配置项 ID
+      description: 配置了多个仓库时指定目标仓库；单仓库时可省略。
+      required: false
+      selector:
+        text:
+    suggestion:
+      name: 建议
+      description: 待丢弃建议的 ID，或 all 表示全部丢弃。
+      required: true
+      selector:
+        text:

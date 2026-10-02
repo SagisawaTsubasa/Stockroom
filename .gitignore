@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Test / linter caches
+.pytest_cache/
+.ruff_cache/
+
+# Environments
+.venv/
+venv/

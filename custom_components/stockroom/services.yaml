@@ -1,0 +1,232 @@
+add_item:
+  name: 新增条目
+  description: 向仓库添加一个库存条目（FDM 打印耗材、螺丝或其它五金件）。id 会按名称自动生成，也可显式指定。
+  fields:
+    entry_id:
+      name: 配置项 ID
+      description: 配置了多个仓库时指定目标仓库；单仓库时可省略。
+      required: false
+      selector:
+        text:
+    name:
+      name: 名称
+      description: 条目展示名，如 "M3×8"、"PLA 白色 1kg"。
+      required: true
+      selector:
+        text:
+    category:
+      name: 分类
+      description: filament（打印耗材）/ screw（螺丝紧固件）/ other（其它）。
+      required: false
+      selector:
+        select:
+          options:
+            - value: filament
+              label: 打印耗材
+            - value: screw
+              label: 螺丝/紧固件
+            - value: other
+              label: 其它
+    quantity:
+      name: 初始数量
+      description: 初始库存量，默认 0。
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 1000000000
+          step: 0.01
+          mode: box
+    unit:
+      name: 单位
+      description: 颗/个/卷/kg/g 等；不填按分类默认（耗材 g、螺丝 颗、其它 个）。
+      required: false
+      selector:
+        text:
+    low_threshold:
+      name: 低库存线
+      description: 数量 ≤ 该值时低库存二进制传感器置 on；不填用选项里的默认低库存阈值。
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 1000000000
+          step: 0.01
+          mode: box
+    location:
+      name: 存放位置
+      description: 可选，如 "仓库-柜2"。
+      required: false
+      selector:
+        text:
+    item_id:
+      name: 条目 ID
+      description: 可选；不填按名称自动生成 slug（同仓库内唯一）。
+      required: false
+      selector:
+        text:
+    material:
+      name: 材质
+      description: 仅耗材有意义，如 PLA / PETG / ABS，写入条目 extra 属性。
+      required: false
+      selector:
+        text:
+    color:
+      name: 颜色
+      description: 仅耗材有意义，hex 色号或颜色名，写入条目 extra 属性。
+      required: false
+      selector:
+        text:
+    full_weight_g:
+      name: 满卷净重（g）
+      description: 仅耗材有意义，满盘克数，写入条目 extra 属性。
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 100000
+          step: 0.1
+          mode: box
+
+remove_item:
+  name: 移除条目
+  description: 从仓库删除一个条目（对应实体随之移除）。
+  fields:
+    entry_id:
+      name: 配置项 ID
+      description: 配置了多个仓库时指定目标仓库；单仓库时可省略。
+      required: false
+      selector:
+        text:
+    item:
+      name: 条目
+      description: 条目 ID（精确优先），或名称唯一匹配；歧义时报错。
+      required: true
+      selector:
+        text:
+
+consume:
+  name: 消耗
+  description: 扣减条目库存，扣到负数时钳为 0 并记日志。
+  fields:
+    entry_id:
+      name: 配置项 ID
+      description: 配置了多个仓库时指定目标仓库；单仓库时可省略。
+      required: false
+      selector:
+        text:
+    item:
+      name: 条目
+      description: 条目 ID（精确优先），或名称唯一匹配；歧义时报错。
+      required: true
+      selector:
+        text:
+    quantity:
+      name: 数量
+      description: 本次消耗量，必须大于 0。
+      required: true
+      selector:
+        number:
+          min: 0.01
+          max: 1000000000
+          step: 0.01
+          mode: box
+    note:
+      name: 备注
+      description: 可选，扣减原因（写入事件数据供自动化使用）。
+      required: false
+      selector:
+        text:
+
+restock:
+  name: 补货
+  description: 增加条目库存。
+  fields:
+    entry_id:
+      name: 配置项 ID
+      description: 配置了多个仓库时指定目标仓库；单仓库时可省略。
+      required: false
+      selector:
+        text:
+    item:
+      name: 条目
+      description: 条目 ID（精确优先），或名称唯一匹配；歧义时报错。
+      required: true
+      selector:
+        text:
+    quantity:
+      name: 数量
+      description: 本次补充量，必须大于 0。
+      required: true
+      selector:
+        number:
+          min: 0.01
+          max: 1000000000
+          step: 0.01
+          mode: box
+    note:
+      name: 备注
+      description: 可选，补货说明。
+      required: false
+      selector:
+        text:
+
+stocktake:
+  name: 盘点
+  description: 把条目校准为实际清点值，并记录盘点时间。
+  fields:
+    entry_id:
+      name: 配置项 ID
+      description: 配置了多个仓库时指定目标仓库；单仓库时可省略。
+      required: false
+      selector:
+        text:
+    item:
+      name: 条目
+      description: 条目 ID（精确优先），或名称唯一匹配；歧义时报错。
+      required: true
+      selector:
+        text:
+    actual:
+      name: 实际数量
+      description: 实际清点到的数量（可以为 0）。
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 1000000000
+          step: 0.01
+          mode: box
+    note:
+      name: 备注
+      description: 可选，盘点说明。
+      required: false
+      selector:
+        text:
+
+set_threshold:
+  name: 设置低库存线
+  description: 调整条目的低库存阈值。
+  fields:
+    entry_id:
+      name: 配置项 ID
+      description: 配置了多个仓库时指定目标仓库；单仓库时可省略。
+      required: false
+      selector:
+        text:
+    item:
+      name: 条目
+      description: 条目 ID（精确优先），或名称唯一匹配；歧义时报错。
+      required: true
+      selector:
+        text:
+    threshold:
+      name: 阈值
+      description: 数量 ≤ 该值时低库存传感器置 on。
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 1000000000
+          step: 0.01
+          mode: box

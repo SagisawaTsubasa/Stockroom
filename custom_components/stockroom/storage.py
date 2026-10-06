@@ -29,7 +29,15 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
-from .const import META_LAST_DEDUCT, STORAGE_KEY, STORAGE_VERSION
+from .const import (
+    HISTORY_MAX,
+    META_FILTER_HISTORY,
+    META_FILTER_SLOTS,
+    META_LAST_DEDUCT,
+    META_SCAN_PENDING,
+    STORAGE_KEY,
+    STORAGE_VERSION,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -77,8 +85,22 @@ class StockroomStore:
         return self.data["items"].setdefault(entry_id, {})
 
     def remove_entry_items(self, entry_id: str) -> None:
-        """Drop the item table of a removed entry."""
+        """Drop the item table and per-entry meta of a removed entry.
+
+        Slot groups and pending scan suggestions are dead the moment the
+        warehouse is gone; last-deduct idempotency records are keyed
+        "{entry_id}|{printer_prefix}", so only that entry's prefix goes.
+        filter_history is a global append-only log by design and survives.
+        """
         self.data["items"].pop(entry_id, None)
+        meta = self.data["meta"]
+        meta.get(META_FILTER_SLOTS, {}).pop(entry_id, None)
+        meta.get(META_SCAN_PENDING, {}).pop(entry_id, None)
+        prefix = f"{entry_id}|"
+        last_deduct = meta.get(META_LAST_DEDUCT)
+        if last_deduct:
+            for key in [key for key in last_deduct if key.startswith(prefix)]:
+                del last_deduct[key]
         self.mark_dirty(entry_id)
 
     def get_meta(self, key: str) -> dict[str, Any]:
@@ -122,6 +144,57 @@ class StockroomStore:
 def last_deduct_records(store: StockroomStore) -> dict[str, Any]:
     """Return the shared per-printer idempotency record table."""
     return store.get_meta(META_LAST_DEDUCT)
+
+
+def filter_slot_groups(store: StockroomStore) -> dict[str, list[dict[str, Any]]]:
+    """Return the mutable per-warehouse filter slot-group table."""
+    return store.get_meta(META_FILTER_SLOTS)
+
+
+def filter_history_records(store: StockroomStore) -> list[dict[str, Any]]:
+    """Return the mutable filter-change history list (creates if missing).
+
+    Unlike dict-shaped meta sections this must default to a *list*;
+    ``get_meta``'s dict default would make the first append explode. A
+    non-list leftover (corrupted/future data) is reset rather than trusted.
+    """
+    history = store.data["meta"].get(META_FILTER_HISTORY)
+    if not isinstance(history, list):
+        history = []
+        store.data["meta"][META_FILTER_HISTORY] = history
+    return history
+
+
+def append_filter_history(
+    store: StockroomStore, record: dict[str, Any], warehouse_entry_id: str
+) -> None:
+    """Append one filter-change record (newest last), FIFO-capped at HISTORY_MAX.
+
+    The cap trims from the front so the newest HISTORY_MAX records always
+    survive; the log is global across warehouses. ``warehouse_entry_id`` is
+    only used to raise the dirty flag — the flush is a full-store save.
+    """
+    history = filter_history_records(store)
+    history.append(record)
+    excess = len(history) - HISTORY_MAX
+    if excess > 0:
+        del history[:excess]
+    store.mark_dirty(warehouse_entry_id)
+
+
+def query_filter_history(
+    store: StockroomStore,
+    warehouse: str | None = None,
+    group_id: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Return history records newest-first, optionally filtered, capped."""
+    records = filter_history_records(store)
+    if warehouse is not None:
+        records = [r for r in records if r.get("warehouse") == warehouse]
+    if group_id is not None:
+        records = [r for r in records if r.get("group_id") == group_id]
+    return list(reversed(records[-limit:])) if limit > 0 else []
 
 
 def schedule_store_flush(hass: HomeAssistant, store: StockroomStore) -> None:

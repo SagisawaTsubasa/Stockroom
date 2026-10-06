@@ -33,8 +33,12 @@ from .const import (
     DEFAULT_UNITS,
     DEFAULT_WAREHOUSE_NAME,
     EVENT_ITEM_CHANGED,
+    EXTRA_COLOR,
+    EXTRA_FULL_WEIGHT_G,
+    EXTRA_MATERIAL,
     ITEM_LAST_STOCKTAKE,
     ITEM_UPDATED_AT,
+    QUANTITY_MAX,
     SIGNAL_ITEMS_UPDATED,
 )
 from .scan import ScanManager
@@ -50,10 +54,16 @@ class StockroomItemError(HomeAssistantError):
 # Quantities are stored rounded to 3 decimals; anything that collapses to a
 # sub-micro residue (1000 - 65.28 - 934.72 style float dust) becomes 0.
 def _round_quantity(value: float) -> float:
-    """Normalize a quantity: reject non-finite/hallucinated values, clamp
-    float dust to a clean 0, round to 3 dp."""
-    if not math.isfinite(value) or value > 1e9:
+    """Normalize a quantity: reject non-finite values, clamp magnitudes
+    beyond QUANTITY_MAX to the ceiling *with a log* (restock sums can get
+    there legally; a silent 0 would wipe real stock), round float dust to a
+    clean 0 and round to 3 dp."""
+    if not math.isfinite(value):
+        _LOGGER.warning("数量出现非有限值 %r，已按 0 处理", value)
         return 0.0
+    if value > QUANTITY_MAX:
+        _LOGGER.warning("数量 %s 超过上限 %g，已钳到上限", value, QUANTITY_MAX)
+        return QUANTITY_MAX
     rounded = round(value, 3)
     return 0.0 if abs(rounded) < 1e-6 else rounded
 
@@ -163,20 +173,28 @@ class InventoryEngine:
 
     async def async_setup(self) -> None:
         """Start listeners: Bambu AMS deduction and the photo-scan webhook."""
-        tray_map = self._opt(CONF_BAMBU_TRAY_MAP) or {}
-        if tray_map:
-            self._bambu = BambuDeductor(self.hass, self.entry, self, self.store, tray_map)
-            self._unsubs.extend(self._bambu.async_setup())
-        if self._opt(CONF_SCAN_ENABLED):
-            self._scan = ScanManager(self.hass, self.entry, self, self.store)
-            # The scan manager unsubscribes its own listeners in its teardown
-            # (its webhook needs an unregister+re-register lifecycle, so it
-            # must not share the plain unsub list with the deduction engine).
-            self._scan.async_setup()
-            _LOGGER.info(
-                "[%s] 拍照扫描已启用，webhook：%s",
-                self.warehouse_name, self._scan.webhook_url,
-            )
+        try:
+            tray_map = self._opt(CONF_BAMBU_TRAY_MAP) or {}
+            if tray_map:
+                self._bambu = BambuDeductor(self.hass, self.entry, self, self.store, tray_map)
+                self._unsubs.extend(self._bambu.async_setup())
+            if self._opt(CONF_SCAN_ENABLED):
+                self._scan = ScanManager(self.hass, self.entry, self, self.store)
+                # The scan manager unsubscribes its own listeners in its teardown
+                # (its webhook needs an unregister+re-register lifecycle, so it
+                # must not share the plain unsub list with the deduction engine).
+                self._scan.async_setup()
+                _LOGGER.info(
+                    "[%s] 拍照扫描已启用，webhook：%s",
+                    self.warehouse_name, self._scan.webhook_url,
+                )
+        except Exception:
+            # Roll back partial setup: when this raises the engine never
+            # reaches hass.data[DOMAIN]["entries"], so the unload-path
+            # teardown never runs and already-registered listeners would
+            # leak until the next HA restart.
+            self.async_teardown()
+            raise
 
     @callback
     def async_teardown(self) -> None:
@@ -243,6 +261,10 @@ class InventoryEngine:
     def resolve_item_id(self, ref: str) -> str:
         """Resolve a service reference: id exact, then unique name match."""
         ref = str(ref).strip()
+        if not ref:
+            # An empty/blank needle would fuzzy-match every name ("", needle
+            # in anything == True) and silently hit a single-item warehouse.
+            raise StockroomItemError("条目引用不能为空（请提供条目 id 或名称）")
         if ref in self.items:
             return ref
         exact = [iid for iid, item in self.items.items() if item.get("name") == ref]
@@ -299,15 +321,22 @@ class InventoryEngine:
             iid = f"{base}-{counter}"
             counter += 1
 
+        threshold = float(
+            low_threshold if low_threshold is not None else self.default_low_threshold
+        )
+        if threshold > QUANTITY_MAX:
+            # Belt and braces: the service schemas cap this at QUANTITY_MAX,
+            # but the internal scan-confirm path bypasses them.
+            _LOGGER.warning("低库存线 %s 超过上限 %g，已钳到上限", threshold, QUANTITY_MAX)
+            threshold = QUANTITY_MAX
+
         item: dict[str, Any] = {
             "id": iid,
             "name": str(name).strip(),
             "category": category,
             "quantity": quantity,
-            "unit": str(unit).strip() if unit else DEFAULT_UNITS.get(category, "个"),
-            "low_threshold": float(
-                low_threshold if low_threshold is not None else self.default_low_threshold
-            ),
+            "unit": (str(unit).strip() if unit else "") or DEFAULT_UNITS.get(category, "个"),
+            "low_threshold": threshold,
             "extra": dict(extra) if extra else {},
             ITEM_LAST_STOCKTAKE: None,
         }
@@ -377,6 +406,56 @@ class InventoryEngine:
         item = self.items[self.resolve_item_id(ref)]
         item["low_threshold"] = max(0.0, float(threshold))
         self._after_mutation(item, "set_threshold")
+        return item
+
+    def update_item(self, ref: str, updates: dict[str, Any]) -> dict[str, Any]:
+        """Patch an item's metadata; only provided keys change.
+
+        Name/category/unit/location/low_threshold are top-level fields;
+        material/color/full_weight_g land in ``extra`` (None clears them).
+        Category changes do not retroactively rewrite the unit. Name cannot
+        be cleared (blank raises); a blank unit resets to the category
+        default (units are mandatory — a silent "" would break displays).
+        """
+        item = self.items[self.resolve_item_id(ref)]
+        if "name" in updates:
+            new_name = str(updates["name"]).strip()
+            if not new_name:
+                raise StockroomItemError(
+                    "条目名称不能为空（名称无法清除，请传新名称或不传该字段）"
+                )
+            item["name"] = new_name
+        if "category" in updates and updates["category"] is not None:
+            if updates["category"] not in CATEGORIES:
+                raise StockroomItemError(
+                    f"未知分类：{updates['category']}（可选：{', '.join(CATEGORIES)}）"
+                )
+            item["category"] = updates["category"]
+        if "unit" in updates and updates["unit"] is not None:
+            item["unit"] = (
+                str(updates["unit"]).strip() or DEFAULT_UNITS.get(item["category"], "个")
+            )
+        if "location" in updates:
+            if updates["location"] is None or not str(updates["location"]).strip():
+                item.pop("location", None)
+            else:
+                item["location"] = str(updates["location"]).strip()
+        if "low_threshold" in updates and updates["low_threshold"] is not None:
+            item["low_threshold"] = max(0.0, float(updates["low_threshold"]))
+        extra = item.setdefault("extra", {})
+        for key in (EXTRA_MATERIAL, EXTRA_COLOR):
+            if key in updates:
+                if updates[key] is None or not str(updates[key]).strip():
+                    extra.pop(key, None)
+                else:
+                    extra[key] = str(updates[key]).strip()
+        if EXTRA_FULL_WEIGHT_G in updates:
+            value = updates[EXTRA_FULL_WEIGHT_G]
+            if value is None or float(value) <= 0:
+                extra.pop(EXTRA_FULL_WEIGHT_G, None)
+            else:
+                extra[EXTRA_FULL_WEIGHT_G] = float(value)
+        self._after_mutation(item, "update")
         return item
 
     def remove_item(self, ref: str) -> dict[str, Any]:

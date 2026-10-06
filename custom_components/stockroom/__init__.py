@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
@@ -12,6 +13,8 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_track_time_interval
 
+from . import filter_link as filter_link_mod
+from . import web as web_mod
 from .const import (
     ALL_SERVICES,
     CATEGORIES,
@@ -23,17 +26,25 @@ from .const import (
     EXTRA_FULL_WEIGHT_G,
     EXTRA_MATERIAL,
     FLUSH_INTERVAL,
+    QUANTITY_MAX,
     SERVICE_ADD_ITEM,
     SERVICE_CONSUME,
+    SERVICE_LOG_FILTER_CHANGE,
     SERVICE_REMOVE_ITEM,
     SERVICE_RESTOCK,
     SERVICE_SCAN_CONFIRM,
     SERVICE_SCAN_DISMISS,
     SERVICE_SET_THRESHOLD,
     SERVICE_STOCKTAKE,
+    SERVICE_UPDATE_ITEM,
 )
 from .inventory import InventoryEngine
-from .storage import StockroomStore, schedule_store_flush
+from .storage import (
+    StockroomStore,
+    append_filter_history,
+    filter_slot_groups,
+    schedule_store_flush,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -45,21 +56,28 @@ PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR]
 
 # consume/restock must move real stock: 0 passes cv.positive_float (Range
 # min=0) but is a meaningless mutation, so clamp it at the schema level.
-_QUANTITY = vol.All(cv.positive_float, vol.Range(min=0.001))
+# The shared ceiling mirrors the services.yaml selectors and the
+# _round_quantity clamp: a value beyond it is refused at the door with a
+# clear error instead of being silently rewritten downstream.
+_QUANTITY = vol.All(cv.positive_float, vol.Range(min=0.001, max=QUANTITY_MAX))
+_STOCK_NUMBER = vol.All(cv.positive_float, vol.Range(max=QUANTITY_MAX))
+# Filament full-spool weight has a tighter physical cap (100 kg), aligned
+# with the services.yaml selector max for the field.
+_FULL_WEIGHT = vol.All(cv.positive_float, vol.Range(max=100000))
 
 ADD_ITEM_SCHEMA = vol.Schema(
     {
         vol.Optional("entry_id"): cv.string,
         vol.Required("name"): cv.string,
         vol.Optional("category", default=CATEGORY_OTHER): vol.In(CATEGORIES),
-        vol.Optional("quantity", default=0.0): cv.positive_float,
+        vol.Optional("quantity", default=0.0): _STOCK_NUMBER,
         vol.Optional("unit"): cv.string,
-        vol.Optional("low_threshold"): cv.positive_float,
+        vol.Optional("low_threshold"): _STOCK_NUMBER,
         vol.Optional("location"): cv.string,
         vol.Optional("item_id"): cv.string,
         vol.Optional("material"): cv.string,
         vol.Optional("color"): cv.string,
-        vol.Optional("full_weight_g"): cv.positive_float,
+        vol.Optional("full_weight_g"): _FULL_WEIGHT,
     }
 )
 REMOVE_ITEM_SCHEMA = vol.Schema(
@@ -88,7 +106,7 @@ STOCKTAKE_SCHEMA = vol.Schema(
     {
         vol.Optional("entry_id"): cv.string,
         vol.Required("item"): cv.string,
-        vol.Required("actual"): cv.positive_float,
+        vol.Required("actual"): _STOCK_NUMBER,
         vol.Optional("note"): cv.string,
     }
 )
@@ -96,7 +114,31 @@ SET_THRESHOLD_SCHEMA = vol.Schema(
     {
         vol.Optional("entry_id"): cv.string,
         vol.Required("item"): cv.string,
-        vol.Required("threshold"): cv.positive_float,
+        vol.Required("threshold"): _STOCK_NUMBER,
+    }
+)
+UPDATE_ITEM_SCHEMA = vol.Schema(
+    {
+        vol.Optional("entry_id"): cv.string,
+        vol.Required("item"): cv.string,
+        vol.Optional("name"): cv.string,
+        vol.Optional("category"): vol.In(CATEGORIES),
+        vol.Optional("unit"): cv.string,
+        vol.Optional("low_threshold"): _STOCK_NUMBER,
+        vol.Optional("location"): cv.string,
+        vol.Optional("material"): cv.string,
+        vol.Optional("color"): cv.string,
+        vol.Optional("full_weight_g"): _FULL_WEIGHT,
+    }
+)
+LOG_FILTER_CHANGE_SCHEMA = vol.Schema(
+    {
+        vol.Optional("entry_id"): cv.string,
+        vol.Required("group_id"): cv.string,
+        vol.Required("level"): cv.positive_int,
+        vol.Required("item"): cv.string,
+        vol.Optional("life_pct"): vol.Coerce(float),
+        vol.Optional("note"): cv.string,
     }
 )
 SCAN_CONFIRM_SCHEMA = vol.Schema(
@@ -104,14 +146,14 @@ SCAN_CONFIRM_SCHEMA = vol.Schema(
         vol.Optional("entry_id"): cv.string,
         vol.Required("suggestion"): cv.string,
         vol.Optional("name"): cv.string,
-        vol.Optional("quantity"): cv.positive_float,
+        vol.Optional("quantity"): _STOCK_NUMBER,
         vol.Optional("category"): vol.In(CATEGORIES),
         vol.Optional("unit"): cv.string,
-        vol.Optional("low_threshold"): cv.positive_float,
+        vol.Optional("low_threshold"): _STOCK_NUMBER,
         vol.Optional("location"): cv.string,
         vol.Optional("material"): cv.string,
         vol.Optional("color"): cv.string,
-        vol.Optional("full_weight_g"): cv.positive_float,
+        vol.Optional("full_weight_g"): _FULL_WEIGHT,
     }
 )
 SCAN_DISMISS_SCHEMA = vol.Schema(
@@ -283,6 +325,76 @@ def _async_register_services(hass: HomeAssistant) -> None:
         engine.set_threshold(call.data["item"], call.data["threshold"])
         _schedule_flush(hass, engine)
 
+    async def handle_update_item(call: ServiceCall) -> None:
+        """Patch an item's metadata; provided keys change, blank clears."""
+        engine = _async_get_engine(hass, call.data.get("entry_id"))
+        updates = {
+            key: call.data[key]
+            for key in (
+                "name",
+                "category",
+                "unit",
+                "low_threshold",
+                "location",
+                EXTRA_MATERIAL,
+                EXTRA_COLOR,
+                EXTRA_FULL_WEIGHT_G,
+            )
+            if key in call.data
+        }
+        engine.update_item(call.data["item"], updates)
+        _schedule_flush(hass, engine)
+
+    async def handle_log_filter_change(call: ServiceCall) -> None:
+        """Manual slot change: deduct one unit and record history atomically."""
+        engine = _async_get_engine(hass, call.data.get("entry_id"))
+        store: StockroomStore = hass.data[DOMAIN]["store"]
+        group = next(
+            (
+                g
+                for g in filter_slot_groups(store).get(engine.entry_id, [])
+                if g.get("group_id") == call.data["group_id"]
+            ),
+            None,
+        )
+        if group is None:
+            raise HomeAssistantError(
+                f"stockroom: 仓库「{engine.warehouse_name}」不存在槽位组 {call.data['group_id']}"
+            )
+        level = int(call.data["level"])
+        if level not in {s.get("level") for s in group.get("levels", [])}:
+            raise HomeAssistantError(
+                f"stockroom: 槽位组「{group.get('name', call.data['group_id'])}」不存在 {level} 级槽位"
+            )
+        item = engine.consume(
+            call.data["item"], 1.0, note=call.data.get("note") or "手动更换滤芯"
+        )
+        append_filter_history(
+            store,
+            {
+                "ts": datetime.now(UTC).isoformat(),
+                "warehouse": engine.entry_id,
+                "warehouse_name": engine.warehouse_name,
+                "group_id": group.get("group_id", ""),
+                "group_name": group.get("name", ""),
+                "level": level,
+                "item_id": item["id"],
+                "item_name": item.get("name", item["id"]),
+                "mode": "manual",
+                "life_pct": call.data.get("life_pct"),
+                "note": call.data.get("note") or "手动更换滤芯",
+            },
+            engine.entry_id,
+        )
+        _schedule_flush(hass, engine)
+        _LOGGER.info(
+            "[%s] 手动更换滤芯：组「%s」%d 级 → 条目 %s 扣减 1",
+            engine.warehouse_name,
+            group.get("name", ""),
+            level,
+            item["id"],
+        )
+
     def _require_scan(engine: InventoryEngine):
         """Resolve the scan manager or fail with a clear message."""
         scan = engine.scan
@@ -351,6 +463,15 @@ def _async_register_services(hass: HomeAssistant) -> None:
         DOMAIN, SERVICE_SET_THRESHOLD, handle_set_threshold, schema=SET_THRESHOLD_SCHEMA
     )
     hass.services.async_register(
+        DOMAIN, SERVICE_UPDATE_ITEM, handle_update_item, schema=UPDATE_ITEM_SCHEMA
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_LOG_FILTER_CHANGE,
+        handle_log_filter_change,
+        schema=LOG_FILTER_CHANGE_SCHEMA,
+    )
+    hass.services.async_register(
         DOMAIN, SERVICE_SCAN_CONFIRM, handle_scan_confirm, schema=SCAN_CONFIRM_SCHEMA
     )
     hass.services.async_register(
@@ -371,6 +492,22 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     return True
 
 
+def _ensure_filter_link(hass: HomeAssistant, store: StockroomStore) -> None:
+    """Subscribe the FLT reset-event listener once per HA run."""
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    if domain_data.get("filter_link_unsub") is not None:
+        return
+    domain_data["filter_link_unsub"] = filter_link_mod.setup_filter_link(hass, store)
+
+
+def _teardown_filter_link(hass: HomeAssistant) -> None:
+    """Drop the FLT reset-event listener when the last entry unloads."""
+    domain_data = hass.data.get(DOMAIN) or {}
+    unsub = domain_data.pop("filter_link_unsub", None)
+    if unsub is not None:
+        unsub()
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up a warehouse from a config entry."""
     store = await _async_get_store(hass)
@@ -379,6 +516,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {}).setdefault("entries", {})[entry.entry_id] = engine
 
     _async_register_services(hass)
+    _ensure_filter_link(hass, store)
+    await web_mod.async_setup_web(hass)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
@@ -402,6 +541,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _maybe_release_store(hass)
         if not hass.data.get(DOMAIN, {}).get("entries"):
             _async_remove_services(hass)
+            _teardown_filter_link(hass)
+            web_mod.async_unload_web(hass)
     return unload_ok
 
 

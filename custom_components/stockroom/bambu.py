@@ -181,19 +181,29 @@ class BambuDeductor:
 
     def async_setup(self) -> list[Any]:
         """Register one print_status listener per mapped printer."""
-        for status_entity_id, prefix in self._status_entities.items():
-            if self.hass.states.get(status_entity_id) is None:
-                _LOGGER.warning(
-                    "[%s] 找不到 %s（打印机集成未就绪或实体已改名），"
-                    "该实体出现前 AMS 自动扣料不会触发",
-                    prefix, status_entity_id,
+        unsubs: list[Any] = []
+        try:
+            for status_entity_id, prefix in self._status_entities.items():
+                if self.hass.states.get(status_entity_id) is None:
+                    _LOGGER.warning(
+                        "[%s] 找不到 %s（打印机集成未就绪或实体已改名），"
+                        "该实体出现前 AMS 自动扣料不会触发",
+                        prefix, status_entity_id,
+                    )
+                _LOGGER.debug("[%s] 监听 %s（AMS 自动扣料）", prefix, status_entity_id)
+                unsubs.append(
+                    async_track_state_change_event(
+                        self.hass, [status_entity_id], self._make_handler(prefix)
+                    )
                 )
-            _LOGGER.debug("[%s] 监听 %s（AMS 自动扣料）", prefix, status_entity_id)
-            self._unsubs.append(
-                async_track_state_change_event(
-                    self.hass, [status_entity_id], self._make_handler(prefix)
-                )
-            )
+        except Exception:
+            # Roll back listeners registered before the failure: the engine
+            # only takes ownership of the returned list on success, so a
+            # broken setup would otherwise leak them until HA restarts.
+            for unsub in unsubs:
+                unsub()
+            raise
+        self._unsubs.extend(unsubs)
         return list(self._unsubs)
 
     def _make_handler(self, prefix: str):

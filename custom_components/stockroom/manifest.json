@@ -8,10 +8,15 @@
     "@SagisawaTsubasa"
   ],
   "config_flow": true,
+  "dependencies": [
+    "frontend",
+    "http",
+    "webhook"
+  ],
   "documentation": "https://github.com/SagisawaTsubasa/Stockroom",
   "integration_type": "hub",
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/SagisawaTsubasa/Stockroom/issues",
   "requirements": [],
-  "version": "0.2.3"
+  "version": "0.3.0"
 }

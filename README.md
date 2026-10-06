@@ -19,11 +19,12 @@ Home Assistant 自定义集成：面向 **FDM 3D 打印耗材（PLA/PETG/ABS/TPU
 - 每个配置项 = 一个虚拟仓库设备，条目（item）数量不限，动态增删实体
 - 三类条目：`filament`（打印耗材）/ `screw`（螺丝紧固件）/ `other`（其它五金件）
 - 条目字段：名称、分类、数量、单位（颗/个/卷/kg/g…）、低库存线、存放位置、耗材附加属性（材质/颜色/满卷净重）、最近盘点时间、最近变动时间
-- 六个领域级服务：`add_item` / `remove_item` / `consume` / `restock` / `stocktake` / `set_threshold`，另有扫描确认 `scan_confirm` / `scan_dismiss`
+- 六个领域级服务：`add_item` / `remove_item` / `consume` / `restock` / `stocktake` / `set_threshold`，另有编辑条目 `update_item`、手动换芯 `log_filter_change` 与扫描确认 `scan_confirm` / `scan_dismiss`
 - 每次变动：实体即时刷新 + 持久化 + 向事件总线发 `stockroom_item_changed`（自动化可订阅；集成自身**从不主动发通知**）
 - 扣减到负数自动钳为 0 并记日志；`stocktake` 校准为实际清点值并记录时间戳
 - 拓竹 AMS 自动扣料：打印完成（`finish`）后按 `print_weight` 的分盘克数逐盘扣减对应条目，带任务级幂等去重
 - **拍照扫描入库**（可选）：手机拍照 POST 到集成 webhook → 视觉模型识别 → 通知按钮一键确认入库
+- **仓管面板**（V0.3.0）：侧边栏全功能管理面板 + 图形化滤芯槽位（可联动 Filter-Life-Tracker，换芯自动扣件并留更换历史）
 
 ## 实体
 
@@ -145,6 +146,30 @@ automation:
 
 `stockroom_item_changed` 事件数据：`entry_id`、`item_id`、`action`（add/remove/consume/restock/stocktake/set_threshold）、`new_quantity`、可选 `note`。
 
+## 仓管面板与滤芯槽位（V0.3.0）
+
+侧边栏新增 **仓管面板**（图标 🏭，仅管理员可见），零构建原生 Web Component，认证复用 HA 登录会话。三个视图：
+
+- **库存**：条目卡片网格（低库存红色高亮）、汇总统计、快捷消耗/补货/盘点、新增/编辑/删除条目（全字段）
+- **滤芯槽位**：把一台设备的多级滤芯图形化为一排槽位（1→2→3 级），每个槽位绑定一个库存条目
+- **更换历史**：每次换芯留档（时间/仓库/组/级/条目/换下时寿命/方式），全局最多保留 500 条
+
+### 滤芯槽位的两种模式
+
+| 模式 | 寿命显示 | 换芯操作 | 扣件方式 |
+|---|---|---|---|
+| **绑定 FLT 设备** | 实时寿命%（读 Filter-Life-Tracker 传感器，绿/黄/红分级） | 按压 FLT 的重置按钮 | FLT 发出 `filter_life_tracker_filter_reset` 事件 → Stockroom 自动扣减绑定条目 1 个并记历史 |
+| **纯手动** | 无（显示 —） | 面板确认后扣件 | 调用 `log_filter_change` 服务：扣 1 个 + 记历史一次完成 |
+
+两种模式可以在同一个仓库混用；未装 Filter-Life-Tracker 时一切照常，只是没有寿命显示。绑定的 FLT 条目被删除时槽位显示「设备未在线或未装集成」，可在组编辑器里清除或改绑。
+
+### 面板相关服务
+
+- `stockroom.update_item`：编辑条目元数据（名称/分类/单位/低库存线/位置/材质/颜色/满卷重），只改传入字段：位置/材质/颜色传空字符串清除，名称不可清除（空串报错），单位传空字符串恢复分类默认，低库存线/满卷重不受空串影响——自动化也能用
+- `stockroom.log_filter_change`：手动槽位换芯一条龙（`group_id` + `level` + `item`，可选 `life_pct` 备注），供自动化或面板外触发
+
+离线开发座架：`dev/index.html`（stub hass + fixture），`python dev/serve.py` 后浏览器打开 `http://localhost:8766` 即可在游戏外调整面板 UI。
+
 ## 拍照扫描入库（V0.2.0）
 
 选项里开启「拍照扫描入库」后，把照片 POST 到 webhook 即可获得条目建议：
@@ -165,7 +190,7 @@ data:
   location: 柜2      # 可选
 ```
 
-**识别边界**（诚实预期）：拍**标签/包装/收纳盒**（品牌、规格、色号、净重）最可靠；散装螺丝的规格视觉上无法可靠分辨——prompt 已要求模型把不确定的规格猜测写进名称并把数量置 0，确认时记得核对。图片格式支持 JPEG/PNG/GIF/WebP（iPhone 捷径里先加一步「转换图像」为 JPEG）；照片仅用于本次识别，不落盘不持久化。待确认队列每仓库上限 50 条（超出淘汰最旧），图片上限 12MB（受 HA 16MB 请求上限与 base64 膨胀约束，超限时调整快捷指令的图像压缩质量）。
+**识别边界**（诚实预期）：拍**标签/包装/收纳盒**（品牌、规格、色号、净重）最可靠；散装螺丝的规格视觉上无法可靠分辨——prompt 已要求模型把不确定的规格猜测写进名称并把数量置 0，确认时记得核对。图片格式支持 JPEG/PNG/GIF/WebP（iPhone 捷径里先加一步「转换图像」为 JPEG）；照片仅用于本次识别，不落盘不持久化。待确认队列每仓库上限 50 条（超出淘汰最旧），图片上限 11MB（base64 膨胀 ×4/3 后须低于 HA 16MB 请求上限，超限时调整快捷指令的图像压缩质量）。
 
 ## AMS 自动扣料说明
 
@@ -201,6 +226,15 @@ A：每台打印机的料盘各自映射即可；幂等记录按「仓库 | 打�
 A：自动扣料时记 WARNING 提示映射悬空，不会误扣其他条目；重新打印前请到集成选项里更新映射。选项里手输的条目 id 会在保存时校验，不存在的 id 直接报错。
 
 ## Changelog
+
+### 0.3.0（2026-10-06）
+
+- **仓管面板**：侧边栏 panel_custom 全功能管理面板（库存卡片/条目 CRUD/快捷消耗补货盘点），零构建 Web Component，`/api/stockroom/panel/*` 三视图聚合接口（`requires_auth` + 管理员）
+- **图形化滤芯槽位**：多级槽位映射库存条目，双模式——绑定 Filter-Life-Tracker 设备（寿命% 展示 + reset 事件自动扣件）或纯手动（`log_filter_change` 扣件+记历史一条龙）
+- **更换历史**：`meta.filter_history` append-only 记录（换下时寿命尽力采集），FIFO 500 条上限
+- 新服务 `update_item`（条目元数据编辑）与 `log_filter_change`；槽位配置存 `meta.filter_slots`，不升存储版本
+- 事件联动的 handler 用同步 `@callback`：`async_fire` 内联执行保证读到的是换下前寿命
+- FLT 为可选软依赖：未装/条目悬空一律优雅降级，不 import 其代码
 
 ### 0.2.3（2026-10-02）
 

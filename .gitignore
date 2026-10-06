@@ -9,3 +9,7 @@ __pycache__/
 # Environments
 .venv/
 venv/
+
+# Local review-fix snapshots & generated panel smoke screenshots
+.backup-pre-fix-*/
+dev/shots/

@@ -45,8 +45,11 @@ DEFAULT_SCAN_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
 DEFAULT_SCAN_MODEL = "glm-4.5v"
 
 SCAN_WEBHOOK_NAME = "Stockroom 扫描入库"
-# Keep under HA's 16MiB request cap even on the JSON+base64 path (×4/3).
-SCAN_MAX_IMAGE_BYTES = 12 * 1024 * 1024
+# JSON+base64 inflates the body ×4/3: a 12 MiB image encodes to exactly HA's
+# 16 MiB request cap (MAX_CLIENT_SIZE in the http component, verified on
+# 2026.1.3) and would trip a bare 413 before our friendly error path —
+# leave headroom instead.
+SCAN_MAX_IMAGE_BYTES = 11 * 1024 * 1024
 SCAN_MAX_SUGGESTIONS = 20
 SCAN_MAX_QUEUE = 50
 SCAN_TIMEOUT_SECONDS = 60
@@ -60,6 +63,11 @@ NOTIFICATION_ACTION_EVENT = "mobile_app_notification_action"
 DEFAULT_WAREHOUSE_NAME = "仓库"
 DEFAULT_LOW_THRESHOLD = 1.0
 DEFAULT_SUMMARY_BY_CATEGORY = False
+
+# Sane ceiling for any single quantity/threshold value, shared by the service
+# schema cap (entry refuses >1e9 with a clear error) and the _round_quantity
+# clamp (internal sums can only reach it with a logged warning).
+QUANTITY_MAX = 1e9
 
 # ----------------------------------------------------------------------
 # Item model
@@ -97,6 +105,8 @@ SERVICE_CONSUME = "consume"
 SERVICE_RESTOCK = "restock"
 SERVICE_STOCKTAKE = "stocktake"
 SERVICE_SET_THRESHOLD = "set_threshold"
+SERVICE_UPDATE_ITEM = "update_item"
+SERVICE_LOG_FILTER_CHANGE = "log_filter_change"
 SERVICE_SCAN_CONFIRM = "scan_confirm"
 SERVICE_SCAN_DISMISS = "scan_dismiss"
 ALL_SERVICES = [
@@ -106,6 +116,8 @@ ALL_SERVICES = [
     SERVICE_RESTOCK,
     SERVICE_STOCKTAKE,
     SERVICE_SET_THRESHOLD,
+    SERVICE_UPDATE_ITEM,
+    SERVICE_LOG_FILTER_CHANGE,
     SERVICE_SCAN_CONFIRM,
     SERVICE_SCAN_DISMISS,
 ]
@@ -150,6 +162,38 @@ BAMBU_START_TIME_ENTITY_SUFFIX = "_start_time"
 META_LAST_DEDUCT = "last_deduct"
 # meta key holding per-entry pending scan suggestions: {entry_id: {sid: item}}.
 META_SCAN_PENDING = "scan_pending"
+
+# ----------------------------------------------------------------------
+# Filter slot linking (滤芯槽位联动)
+# ----------------------------------------------------------------------
+
+# meta section: {warehouse_entry_id: [slot_group, ...]} where slot_group is
+# {"group_id": str, "name": str, "flt_entry_id": str | None,
+#  "levels": [{"level": int, "item_id": str | None}, ...]}.
+# item_id=None marks a manual slot (no FLT binding, panel-driven changes).
+META_FILTER_SLOTS = "filter_slots"
+# meta section: append-only change log, newest last, FIFO-capped at HISTORY_MAX.
+META_FILTER_HISTORY = "filter_history"
+HISTORY_MAX = 500
+
+# Filter-Life-Tracker integration facts. Kept as literals on purpose: FLT is
+# an optional sibling integration and must stay a runtime-only dependency
+# (its const.py defines the same strings; drift is covered by panel tests).
+FLT_DOMAIN = "filter_life_tracker"
+FLT_EVENT_RESET = "filter_life_tracker_filter_reset"
+FLT_ENTRY_TYPE_DEVICE = "device"
+FLT_NOTE_AUTO_DEDUCT = "滤芯更换自动扣减"
+
+# ----------------------------------------------------------------------
+# Sidebar panel (仓管面板)
+# ----------------------------------------------------------------------
+
+PANEL_URL_PATH = "stockroom-panel"
+PANEL_SIDEBAR_TITLE = "仓管面板"
+PANEL_SIDEBAR_ICON = "mdi:warehouse"
+PANEL_ELEMENT = "stockroom-panel"
+URL_BASE = f"/{DOMAIN}"
+API_BASE = f"/api/{DOMAIN}"
 
 # Vision-extraction prompt: labels/packaging first, quantities only when
 # grounded, JSON array output with no markdown fencing.

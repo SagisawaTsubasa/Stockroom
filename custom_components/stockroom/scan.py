@@ -61,6 +61,7 @@ from .const import (
     EXTRA_MATERIAL,
     META_SCAN_PENDING,
     NOTIFICATION_ACTION_EVENT,
+    QUANTITY_MAX,
     SCAN_MAX_IMAGE_BYTES,
     SCAN_MAX_QUEUE,
     SCAN_MAX_SUGGESTIONS,
@@ -150,6 +151,11 @@ async def extract_image_bytes(request: Any, hass: HomeAssistant | None = None) -
                 data = dict(await request.post())
         except (TypeError, ValueError) as err:
             raise ValueError("无法解析上传内容") from err
+        except TimeoutError as err:
+            # asyncio.timeout raises TimeoutError (an alias of asyncio.
+            # TimeoutError on 3.11+); uncaught it would bubble out of the
+            # webhook handler as a bare 500.
+            raise ValueError("上传超时，请重试或压缩图片后重试") from err
         field = data.get("image")
         if field is None:
             raise ValueError("multipart 上传缺少 image 字段")
@@ -175,20 +181,25 @@ async def extract_image_bytes(request: Any, hass: HomeAssistant | None = None) -
 def parse_suggestions(content: str) -> list[dict[str, Any]]:
     """Parse the model's reply into sanitized suggestion dicts.
 
-    Defensive by design: fenced or fence-less JSON, an object wrapping the
-    array under ``items``, bad elements and bad fields are all handled —
-    garbage is dropped, never raised.
+    Defensive by design: fenced or fence-less JSON and an object wrapping
+    the array under ``items`` are all handled, and individual junk elements
+    are dropped. Structural failures (unparseable reply, no item array,
+    nothing usable inside it) raise ``ValueError`` so the webhook answers
+    ``ok:false`` — a broken recognition run must be distinguishable from
+    "the photo genuinely contains nothing".
     """
     try:
         data = json.loads(_strip_fences(content))
-    except (TypeError, ValueError):
-        _LOGGER.warning("识别结果不是合法 JSON，已丢弃")
-        return []
+    except (TypeError, ValueError) as err:
+        _LOGGER.warning("识别结果不是合法 JSON")
+        raise ValueError("识别结果不是合法 JSON") from err
     if isinstance(data, dict):
         data = data.get("items")
     if not isinstance(data, list):
-        _LOGGER.warning("识别结果不含条目数组，已丢弃")
-        return []
+        _LOGGER.warning("识别结果不含条目数组")
+        # The caller contract is "parse failure ⇒ ValueError" —
+        # _handle_webhook turns it into ok:false; TypeError would break it.
+        raise ValueError("识别结果不含条目数组")  # noqa: TRY004
 
     suggestions: list[dict[str, Any]] = []
     for element in data[:SCAN_MAX_SUGGESTIONS]:
@@ -210,21 +221,32 @@ def parse_suggestions(content: str) -> list[dict[str, Any]]:
             "category": category,
             "quantity": quantity,
             "unit": unit,
-            "low_threshold": low_threshold,
             "location": str(element.get("location") or "").strip(),
         }
+        # 0 (or a missing/negative key clamped to 0) means "unknown": leave
+        # the key out so add_item falls back to the warehouse default —
+        # writing 0 would silently pin the threshold and the item would
+        # never go low-stock. Hallucinated magnitudes beyond QUANTITY_MAX
+        # count as unknown too: the internal confirm→add_item path bypasses
+        # the service schemas, so the cap has to be enforced here as well.
+        if 0 < low_threshold <= QUANTITY_MAX:
+            suggestion["low_threshold"] = low_threshold
         extra: dict[str, Any] = {}
         if element.get("material"):
             extra["material"] = str(element["material"]).strip()
         if element.get("color"):
             extra["color"] = str(element["color"]).strip()
-        if full_weight_g:
+        if 0 < full_weight_g <= QUANTITY_MAX:
             extra["full_weight_g"] = full_weight_g
         if extra:
             suggestion["extra"] = extra
         suggestions.append(suggestion)
-    if not suggestions:
+    if data and not suggestions:
+        # The model replied with an item array but nothing in it was usable:
+        # a recognition failure — distinct from an explicit empty array,
+        # which is a legitimate "nothing in the photo".
         _LOGGER.warning("识别结果没有可用条目")
+        raise ValueError("识别结果没有可用条目")
     return suggestions
 
 
@@ -327,6 +349,13 @@ class ScanManager:
 
         try:
             suggestions = await self._recognize(image)
+        except ValueError as err:
+            # parse_suggestions raising is a recognition failure, not an
+            # empty photo — tell the caller instead of ok:true + [].
+            _LOGGER.warning(
+                "[%s] 识别结果无法解析：%s", self.engine.warehouse_name, err
+            )
+            return web.json_response({"ok": False, "error": str(err)})
         except (TimeoutError, asyncio.TimeoutError):
             _LOGGER.warning("[%s] 识别请求超时", self.engine.warehouse_name)
             return web.json_response({"ok": False, "error": "识别超时"})
@@ -359,7 +388,11 @@ class ScanManager:
     # ------------------------------------------------------------------
 
     async def _recognize(self, image: bytes) -> list[dict[str, Any]]:
-        """Ask the configured vision model for item suggestions."""
+        """Ask the configured vision model for item suggestions.
+
+        Raises ValueError when the reply cannot be parsed into suggestions;
+        the webhook handler answers ok:false in that case.
+        """
         session = async_get_clientsession(self.hass)
         base_url = str(
             self._opt(CONF_SCAN_BASE_URL, DEFAULT_SCAN_BASE_URL)

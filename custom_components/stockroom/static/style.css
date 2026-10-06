@@ -1,0 +1,520 @@
+/* Stockroom panel — themed with HA frontend CSS variables so dark/light
+   both work without extra media queries. Loaded into the shadow root via
+   <link rel="stylesheet"> from panel.js. */
+
+:host {
+  display: block;
+  height: 100%;
+  font-family: var(--paper-font-body1_-_font-family, inherit);
+  color: var(--primary-text-color);
+  background: var(--primary-background-color);
+}
+
+.srp-root {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 16px 16px 64px;
+  box-sizing: border-box;
+}
+
+/* ---------- top bar ---------- */
+
+.srp-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--primary-background-color);
+  padding: 12px 4px 8px;
+  border-bottom: 1px solid var(--divider-color);
+}
+
+.srp-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.srp-title {
+  font-size: 20px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.srp-title ha-icon,
+.srp-title .material-icons {
+  color: var(--primary-color);
+}
+
+.srp-tabs {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.srp-tab {
+  border: none;
+  background: transparent;
+  color: var(--secondary-text-color);
+  font: inherit;
+  font-size: 14px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.srp-tab.active {
+  background: var(--primary-color);
+  color: var(--text-primary-color, #fff);
+}
+
+.srp-warehouse-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.srp-chip {
+  border: 1px solid var(--divider-color);
+  background: var(--card-background-color);
+  color: var(--primary-text-color);
+  font: inherit;
+  font-size: 13px;
+  padding: 5px 12px;
+  border-radius: 14px;
+  cursor: pointer;
+}
+
+.srp-chip.active {
+  border-color: var(--primary-color);
+  color: var(--primary-color);
+  font-weight: 500;
+}
+
+/* ---------- shared ---------- */
+
+.srp-summary {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin: 14px 0 10px;
+  color: var(--secondary-text-color);
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+
+.srp-summary .srp-low-flag {
+  color: var(--error-color, #db4437);
+  font-weight: 500;
+}
+
+.srp-section-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 18px 0 10px;
+}
+
+.srp-section-head h2 {
+  font-size: 16px;
+  font-weight: 500;
+  margin: 0;
+}
+
+.srp-btn {
+  border: 1px solid var(--divider-color);
+  background: var(--card-background-color);
+  color: var(--primary-text-color);
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.srp-btn:hover {
+  filter: brightness(1.08);
+}
+
+.srp-btn.primary {
+  background: var(--primary-color);
+  border-color: var(--primary-color);
+  color: var(--text-primary-color, #fff);
+}
+
+.srp-btn.danger {
+  color: var(--error-color, #db4437);
+  border-color: var(--error-color, #db4437);
+}
+
+.srp-btn.small {
+  padding: 3px 9px;
+  font-size: 12px;
+  border-radius: 6px;
+}
+
+.srp-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.srp-card {
+  background: var(--card-background-color);
+  border-radius: 12px;
+  border: 1px solid var(--divider-color);
+  padding: 14px;
+  box-sizing: border-box;
+}
+
+.srp-hint {
+  color: var(--secondary-text-color);
+  font-size: 13px;
+  margin: 14px 2px;
+}
+
+.srp-error-banner {
+  background: rgba(var(--rgb-error-color, 219, 68, 55), 0.12);
+  color: var(--error-color, #db4437);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin: 12px 0;
+  font-size: 13px;
+}
+
+/* ---------- inventory grid ---------- */
+
+.srp-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(255px, 1fr));
+  gap: 12px;
+}
+
+.srp-item-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.srp-item-card.low {
+  border-color: var(--error-color, #db4437);
+}
+
+.srp-item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.srp-item-head .material-icons,
+.srp-item-head ha-icon {
+  color: var(--secondary-text-color);
+}
+
+.srp-item-name {
+  font-size: 15px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.srp-item-qty {
+  font-size: 26px;
+  font-weight: 500;
+  line-height: 1.1;
+}
+
+.srp-item-qty small {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--secondary-text-color);
+  margin-left: 3px;
+}
+
+.srp-item-meta {
+  color: var(--secondary-text-color);
+  font-size: 12px;
+  min-height: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.srp-item-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+.srp-low-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: var(--error-color, #db4437);
+  color: #fff;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+/* ---------- filter slots ---------- */
+
+.srp-group-card {
+  margin-bottom: 14px;
+}
+
+.srp-group-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.srp-group-name {
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.srp-mode-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.15);
+  color: var(--primary-color);
+}
+
+.srp-mode-badge.manual {
+  background: rgba(var(--rgb-secondary-text-color, 128, 128, 128), 0.15);
+  color: var(--secondary-text-color);
+}
+
+.srp-group-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+}
+
+.srp-slot-chain {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  margin-top: 12px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.srp-slot {
+  flex: 1;
+  min-width: 150px;
+  border: 1px solid var(--divider-color);
+  border-radius: 10px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  box-sizing: border-box;
+}
+
+.srp-slot-arrow {
+  align-self: center;
+  color: var(--secondary-text-color);
+  font-size: 18px;
+}
+
+.srp-slot-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.srp-level-badge {
+  background: var(--secondary-background-color, rgba(128, 128, 128, 0.15));
+  border-radius: 6px;
+  font-size: 12px;
+  padding: 1px 7px;
+  color: var(--secondary-text-color);
+}
+
+.srp-life {
+  font-size: 22px;
+  font-weight: 500;
+}
+
+.srp-life.good { color: var(--success-color, #4caf50); }
+.srp-life.warn { color: var(--warning-color, #ff9800); }
+.srp-life.bad  { color: var(--error-color, #db4437); }
+.srp-life.none { color: var(--secondary-text-color); }
+
+.srp-slot-item {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.srp-slot-stock {
+  font-size: 12px;
+  color: var(--secondary-text-color);
+}
+
+.srp-slot-stock.danger { color: var(--error-color, #db4437); }
+
+.srp-slot-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: auto;
+}
+
+/* ---------- history table ---------- */
+
+.srp-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  background: var(--card-background-color);
+  border: 1px solid var(--divider-color);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.srp-table th,
+.srp-table td {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--divider-color);
+}
+
+.srp-table th {
+  color: var(--secondary-text-color);
+  font-weight: 500;
+  font-size: 12px;
+  background: var(--secondary-background-color, rgba(128, 128, 128, 0.06));
+}
+
+.srp-table tr:last-child td { border-bottom: none; }
+
+.srp-mode-tag {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.srp-mode-tag.flt {
+  background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.15);
+  color: var(--primary-color);
+}
+
+.srp-mode-tag.manual {
+  background: rgba(var(--rgb-secondary-text-color, 128, 128, 128), 0.15);
+  color: var(--secondary-text-color);
+}
+
+/* ---------- dialogs ---------- */
+
+.srp-dialog {
+  border: 1px solid var(--divider-color);
+  border-radius: 14px;
+  background: var(--card-background-color);
+  color: var(--primary-text-color);
+  padding: 0;
+  min-width: 320px;
+  max-width: min(560px, 92vw);
+}
+
+.srp-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.srp-dialog-body {
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.srp-dialog h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.srp-dialog-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--divider-color);
+}
+
+.srp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.srp-field > label {
+  font-size: 12px;
+  color: var(--secondary-text-color);
+}
+
+.srp-field input,
+.srp-field select {
+  font: inherit;
+  font-size: 14px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--divider-color);
+  background: var(--primary-background-color);
+  color: var(--primary-text-color);
+  box-sizing: border-box;
+}
+
+.srp-field-row {
+  display: flex;
+  gap: 10px;
+}
+
+.srp-field-row .srp-field { flex: 1; }
+
+.srp-slot-bind-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.srp-slot-bind-row .srp-level-badge { flex-shrink: 0; }
+
+.srp-slot-bind-row select { flex: 1; }
+
+/* ---------- toast ---------- */
+
+.srp-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  background: var(--secondary-background-color, #333);
+  color: var(--primary-text-color, #fff);
+  padding: 10px 18px;
+  border-radius: 10px;
+  font-size: 13px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  z-index: 50;
+  max-width: 80vw;
+}
+
+.srp-toast.error {
+  background: var(--error-color, #db4437);
+  color: #fff;
+}

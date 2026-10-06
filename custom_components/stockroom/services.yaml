@@ -231,6 +231,135 @@ set_threshold:
           step: 0.01
           mode: box
 
+update_item:
+  name: 编辑条目
+  description: 修改条目元数据；只改变传入的字段。location/material/color 传空字符串清除；name 不可清除（空字符串报错）；unit 传空字符串恢复分类默认单位；low_threshold/full_weight_g 不受空字符串影响。
+  fields:
+    entry_id:
+      name: 配置项 ID
+      description: 配置了多个仓库时指定目标仓库；单仓库时可省略。
+      required: false
+      selector:
+        text:
+    item:
+      name: 条目
+      description: 条目 ID（精确优先），或名称唯一匹配；歧义时报错。
+      required: true
+      selector:
+        text:
+    name:
+      name: 名称
+      description: 可选；新的展示名（不能为空：名称无法清除，传空字符串会报错）。
+      required: false
+      selector:
+        text:
+    category:
+      name: 分类
+      description: 可选；新的分类（不会自动改单位）。
+      required: false
+      selector:
+        select:
+          options:
+            - value: filament
+              label: 打印耗材
+            - value: screw
+              label: 螺丝/紧固件
+            - value: other
+              label: 其它
+    unit:
+      name: 单位
+      description: 可选；新的数量单位；传空字符串恢复分类默认单位。
+      required: false
+      selector:
+        text:
+    low_threshold:
+      name: 低库存线
+      description: 可选；新的低库存阈值。
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 1000000000
+          step: 0.01
+          mode: box
+    location:
+      name: 存放位置
+      description: 可选；新位置，传空字符串清除。
+      required: false
+      selector:
+        text:
+    material:
+      name: 材质
+      description: 可选；仅耗材，传空字符串清除。
+      required: false
+      selector:
+        text:
+    color:
+      name: 颜色
+      description: 可选；仅耗材，传空字符串清除。
+      required: false
+      selector:
+        text:
+    full_weight_g:
+      name: 满卷净重（g）
+      description: 可选；仅耗材，0 或不填清除。
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 100000
+          step: 0.1
+          mode: box
+
+log_filter_change:
+  name: 手动更换滤芯
+  description: 手动槽位换芯一条龙：扣减绑定条目 1 个并写入更换历史（滤芯槽位联动用）。
+  fields:
+    entry_id:
+      name: 配置项 ID
+      description: 配置了多个仓库时指定目标仓库；单仓库时可省略。
+      required: false
+      selector:
+        text:
+    group_id:
+      name: 槽位组 ID
+      description: 滤芯槽位组的 group_id（面板里建组时生成）。
+      required: true
+      selector:
+        text:
+    level:
+      name: 槽位级数
+      description: 要更换的槽位级数（1=一级滤芯…）。
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 64
+          step: 1
+          mode: box
+    item:
+      name: 条目
+      description: 扣减的条目 ID 或名称（应与该槽位绑定一致）。
+      required: true
+      selector:
+        text:
+    life_pct:
+      name: 换下时寿命（%）
+      description: 可选；换下时该级滤芯的剩余寿命百分比，仅供历史记录。
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 0.1
+          mode: box
+    note:
+      name: 备注
+      description: 可选，写入历史与扣减事件备注。
+      required: false
+      selector:
+        text:
+
 scan_confirm:
   name: 扫描确认入库
   description: 把拍照识别的待确认建议转为真实条目；suggestion 填建议 ID 或 all。可带字段覆盖建议值。
@@ -298,6 +427,28 @@ scan_confirm:
       required: false
       selector:
         text:
+    material:
+      name: 材质
+      description: 可选；覆盖识别出的材质（仅耗材）。
+      required: false
+      selector:
+        text:
+    color:
+      name: 颜色
+      description: 可选；覆盖识别出的颜色（仅耗材）。
+      required: false
+      selector:
+        text:
+    full_weight_g:
+      name: 满卷净重（g）
+      description: 可选；覆盖识别出的满卷净重（仅耗材）。
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 100000
+          step: 0.1
+          mode: box
 
 scan_dismiss:
   name: 扫描忽略建议

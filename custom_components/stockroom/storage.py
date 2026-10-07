@@ -200,14 +200,21 @@ def query_filter_history(
 def schedule_store_flush(hass: HomeAssistant, store: StockroomStore) -> None:
     """Ask for a flush from any thread.
 
-    On the event loop this is a plain task; from executor threads
-    (``async_create_task`` would raise there) the task creation is forwarded
-    onto the loop instead. The coroutine is created only in the branch that
-    consumes it, so a failed scheduling can't leak it.
+    On the HA event loop this is a plain task; from any other thread
+    (including threads with their own running loop, where
+    ``hass.async_create_task`` would raise) the scheduling is forwarded onto
+    the loop. The coroutine is created on the loop side only, so a failed
+    scheduling can't leak a never-awaited coroutine.
     """
     try:
-        asyncio.get_running_loop()
+        on_hass_loop = asyncio.get_running_loop() is hass.loop
     except RuntimeError:
-        hass.loop.call_soon_threadsafe(hass.async_create_task, store.async_flush())
-    else:
+        on_hass_loop = False
+    if on_hass_loop:
         hass.async_create_task(store.async_flush())
+    else:
+
+        def _schedule() -> None:
+            hass.async_create_task(store.async_flush())
+
+        hass.loop.call_soon_threadsafe(_schedule)

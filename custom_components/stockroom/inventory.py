@@ -462,10 +462,7 @@ class InventoryEngine:
         """Delete an item; entities disappear via the dispatcher diff."""
         iid = self.resolve_item_id(ref)
         item = self.items.pop(iid)
-        item[ITEM_UPDATED_AT] = utcnow_iso()
-        self.store.mark_dirty(self.entry_id)
-        self._fire_event(iid, "remove", None, note=None)
-        async_dispatcher_send(self.hass, SIGNAL_ITEMS_UPDATED.format(self.entry_id))
+        self._after_mutation(item, "remove", note=None)
         _LOGGER.info("[%s] 移除条目 %s", self.warehouse_name, iid)
         return item
 

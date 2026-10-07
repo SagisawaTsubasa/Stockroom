@@ -227,6 +227,12 @@ A：自动扣料时记 WARNING 提示映射悬空，不会误扣其他条目；�
 
 ## Changelog
 
+### 0.3.1（2026-10-07）
+
+- `remove_item` 事件/广播收口进 `_after_mutation`，与 add/update/restock 同序同路径；`stockroom_item_changed` 的 remove 事件 `new_quantity` 由 `null` 改为携带被删时数量（审查台账 SR-P3-1，复验确认无破坏性消费方）
+- `schedule_store_flush` 分支判据改为 `get_running_loop() is hass.loop`（identity），非 loop 线程的协程创建与任务调度全部移交 loop 侧，消除异 loop 线程 RuntimeError 边界与 never-awaited 泄漏（SR-P3-2）
+- 两条均为存量 P3 按新规「P3 一律修复不延后」返修；wb 复验 0 新发现收口
+
 ### 0.3.0（2026-10-06）
 
 - **仓管面板**：侧边栏 panel_custom 全功能管理面板（库存卡片/条目 CRUD/快捷消耗补货盘点），零构建 Web Component，`/api/stockroom/panel/*` 三视图聚合接口（`requires_auth` + 管理员）

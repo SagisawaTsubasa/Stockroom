@@ -40,7 +40,6 @@ from .const import (
     BAMBU_DOMAIN,
     CATEGORY_FILAMENT,
     CONF_BAMBU_TRAY_MAP,
-    CONF_SCAN_API_KEY,
     DEFAULT_WARN_THRESHOLD,
     DOMAIN,
     EXTRA_COLOR,
@@ -147,6 +146,45 @@ def _normalize_color(value: Any) -> str | None:
     return None
 
 
+# Basic color vocabulary for human-readable spool names: hex codes never
+# belong in item names ("Bambu PLA Basic 白色", not "… #FFFFFF").
+_COLOR_NAMES: list[tuple[str, tuple[int, int, int]]] = [
+    ("白色", (255, 255, 255)),
+    ("黑色", (0, 0, 0)),
+    ("红色", (226, 44, 44)),
+    ("橙色", (255, 128, 0)),
+    ("黄色", (255, 221, 0)),
+    ("绿色", (0, 176, 80)),
+    ("青色", (0, 188, 212)),
+    ("浅蓝", (173, 216, 230)),
+    ("蓝色", (44, 84, 220)),
+    ("紫色", (139, 0, 255)),
+    ("淡紫", (179, 157, 219)),
+    ("粉色", (255, 128, 192)),
+    ("棕色", (139, 69, 19)),
+    ("灰色", (128, 128, 128)),
+    ("金色", (212, 175, 55)),
+    ("银色", (192, 192, 192)),
+]
+_COLOR_NAME_MAX_DIST = 110  # per-channel Euclidean threshold
+
+
+def _color_name(hex_color: str | None) -> str | None:
+    """Closest basic Chinese color name within tolerance, else None."""
+    normalized = _normalize_color(hex_color)
+    if normalized is None:
+        return None
+    rgb = tuple(int(normalized[i : i + 2], 16) for i in (1, 3, 5))
+    best_name, best_dist = None, None
+    for name, base in _COLOR_NAMES:
+        dist = sum((a - b) ** 2 for a, b in zip(rgb, base)) ** 0.5
+        if best_dist is None or dist < best_dist:
+            best_name, best_dist = name, dist
+    if best_dist is None or best_dist > _COLOR_NAME_MAX_DIST:
+        return None
+    return best_name
+
+
 def _spool_color_is_trustworthy(uuid: str, spool_color: str) -> bool:
     """False for RFID-less third-party spools: ha-bambulab reports a flat
     #FFFFFF color for them, so "mismatch" against a real item color would be
@@ -249,10 +287,14 @@ def _bambu_view(hass: HomeAssistant) -> list[dict[str, Any]]:
                     "name": name,
                     "type": spool_type,
                     "color": spool_color,
+                    "color_name": _color_name(spool_color) if color_trusted else None,
                     "color_trusted": color_trusted,
                     "owners": owners,
                 }
             )
+    # Stable spool order: printer → AMS → tray number (registry iteration
+    # order is not sorted and the panel shows rows as-is).
+    trays.sort(key=lambda t: (t["printer"], t["ams_no"], t["tray_no"]))
     return trays
 
 
@@ -298,12 +340,14 @@ class BambuSyncView(HomeAssistantView):
                 # The panel prefills and lets the user edit the name; an
                 # explicit name always wins over the auto-derived one
                 # (SR-F-053). RFID-less spools report a flat white — don't
-                # bake it into the name/extra (SR-F-056).
+                # bake it into the name/extra (SR-F-056). Names carry the
+                # Chinese color word, never a hex code.
                 uuid = str(state.attributes.get("tray_uuid") or "")
                 color_trusted = _spool_color_is_trustworthy(uuid, spool_color)
                 normalized = _normalize_color(spool_color) if color_trusted else None
+                color_word = _color_name(spool_color) if color_trusted else None
                 requested_name = str(body.get("name") or "").strip()
-                name = requested_name or f"{spool_name} {normalized or ''}".strip()
+                name = requested_name or f"{spool_name} {color_word or ''}".strip()
                 extra = {
                     key: value
                     for key, value in (
@@ -414,12 +458,13 @@ class ScanView(HomeAssistantView):
             scan = engine.scan
             if scan is None:
                 raise _WebError(
-                    409, "拍照扫描未启用（请在集成选项里开启并配置识别 API key）"
+                    409, "拍照扫描未启用（请在集成选项里开启并配置识别引擎）"
                 )
-            if not scan._opt(CONF_SCAN_API_KEY):
-                # Mirror the webhook guard: without a key _recognize would
-                # send "Bearer None" at the vision endpoint (SR-F-034).
-                raise _WebError(409, "未配置识别 API key（请在集成选项里填写）")
+            credential_error = scan._missing_credential_error()
+            if credential_error:
+                # Engine-aware (SR-F-034 semantics kept, SR-F-070: OCR-only
+                # setups must not be gated on the vision API key).
+                raise _WebError(409, credential_error)
             raw = body.get("image_base64")
             if not raw:
                 raise _WebError(400, "缺少 image_base64 字段")

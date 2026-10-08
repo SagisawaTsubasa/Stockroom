@@ -35,10 +35,24 @@ CONF_BAMBU_TRAY_MAP = "bambu_tray_map"
 # ----------------------------------------------------------------------
 
 CONF_SCAN_ENABLED = "scan_enabled"
+CONF_SCAN_ENGINE = "scan_engine"
+SCAN_ENGINE_LLM = "llm"
+SCAN_ENGINE_OCR = "ocr"
+SCAN_ENGINES = [SCAN_ENGINE_LLM, SCAN_ENGINE_OCR]
+DEFAULT_SCAN_ENGINE = SCAN_ENGINE_LLM
+CONF_OCR_SECRET_ID = "scan_ocr_secret_id"
+CONF_OCR_SECRET_KEY = "scan_ocr_secret_key"
 CONF_SCAN_BASE_URL = "scan_base_url"
 CONF_SCAN_API_KEY = "scan_api_key"
 CONF_SCAN_MODEL = "scan_model"
 CONF_SCAN_DEVICE_ID = "scan_device_id"
+
+# Tencent Cloud GeneralBasicOCR (在线 OCR 引擎的免费后端)
+TC_OCR_URL = "https://ocr.tencentcloudapi.com"
+TC_OCR_HOST = "ocr.tencentcloudapi.com"
+TC_OCR_ACTION = "GeneralBasicOCR"
+TC_OCR_VERSION = "2018-11-19"
+TC_OCR_SERVICE = "ocr"
 
 DEFAULT_SCAN_ENABLED = False
 DEFAULT_SCAN_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"

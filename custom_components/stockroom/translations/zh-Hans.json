@@ -29,7 +29,10 @@
           "scan_base_url": "视觉 API 地址",
           "scan_api_key": "视觉 API Key",
           "scan_model": "视觉模型",
-          "bambu_tray_entities": "Bambu Lab 料盘实体"
+          "bambu_tray_entities": "Bambu Lab 料盘实体",
+          "scan_engine": "识别引擎",
+          "scan_ocr_secret_id": "腾讯云 OCR SecretId",
+          "scan_ocr_secret_key": "腾讯云 OCR SecretKey"
         },
         "data_description": {
           "default_low_threshold": "add_item 服务未指定 low_threshold 时使用。",
@@ -39,7 +42,10 @@
           "scan_base_url": "OpenAI 兼容端点地址（示例见 README）。",
           "scan_api_key": "视觉服务的 API Key（存在集成选项里，仅本地使用）。",
           "scan_model": "视觉模型名，如 glm-4.5v",
-          "bambu_tray_entities": "选择需要自动扣料的拓竹 AMS 料盘实体；打印完成后按分盘克数自动扣减。AMS HT 与外挂盘暂不支持。留空则不启用。"
+          "bambu_tray_entities": "选择需要自动扣料的拓竹 AMS 料盘实体；打印完成后按分盘克数自动扣减。AMS HT 与外挂盘暂不支持。留空则不启用。",
+          "scan_engine": "视觉模型（OpenAI 兼容端点，可指向本地 Ollama）或在线 OCR（腾讯云通用印刷体识别，免费额度约 1000 次/月）。",
+          "scan_ocr_secret_id": "仅在线 OCR 引擎使用。",
+          "scan_ocr_secret_key": "仅在线 OCR 引擎使用。"
         }
       },
       "ams_map": {

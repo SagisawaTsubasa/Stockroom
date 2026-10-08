@@ -25,9 +25,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import hashlib
+import hmac
 import json
 import logging
 import math
+import re
 import secrets
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -47,13 +50,18 @@ from .const import (
     ACTION_CONFIRM_PREFIX,
     ACTION_DISMISS_PREFIX,
     CATEGORIES,
+    CATEGORY_FILAMENT,
     CATEGORY_OTHER,
+    CONF_OCR_SECRET_ID,
+    CONF_OCR_SECRET_KEY,
     CONF_SCAN_API_KEY,
     CONF_SCAN_BASE_URL,
     CONF_SCAN_DEVICE_ID,
     CONF_SCAN_ENABLED,
+    CONF_SCAN_ENGINE,
     CONF_SCAN_MODEL,
     DEFAULT_SCAN_BASE_URL,
+    DEFAULT_SCAN_ENGINE,
     DEFAULT_SCAN_MODEL,
     DEFAULT_UNITS,
     EXTRA_COLOR,
@@ -62,12 +70,19 @@ from .const import (
     META_SCAN_PENDING,
     NOTIFICATION_ACTION_EVENT,
     QUANTITY_MAX,
+    SCAN_ENGINE_OCR,
+    SCAN_ENGINES,
     SCAN_MAX_IMAGE_BYTES,
     SCAN_MAX_QUEUE,
     SCAN_MAX_SUGGESTIONS,
     SCAN_PROMPT,
     SCAN_TIMEOUT_SECONDS,
     SCAN_WEBHOOK_NAME,
+    TC_OCR_ACTION,
+    TC_OCR_HOST,
+    TC_OCR_SERVICE,
+    TC_OCR_URL,
+    TC_OCR_VERSION,
 )
 from .storage import StockroomStore, schedule_store_flush
 
@@ -259,6 +274,195 @@ def parse_suggestions(content: str) -> list[dict[str, Any]]:
     return suggestions
 
 
+# ----------------------------------------------------------------------
+# OCR engine (腾讯云通用印刷体识别, TC3-HMAC-SHA256 signed, no SDK)
+# ----------------------------------------------------------------------
+
+_TC_OCR_MAX_IMAGE = 7_500_000  # raw bytes; base64 inflates ×4/3 → <10 MB
+_OCR_MATERIALS = (
+    "PLA", "PETG", "ABS", "ASA", "TPU", "PC", "PVA", "HIPS", "NYLON", "PA",
+)
+_OCR_COLOR_WORDS = {
+    "白色": "#FFFFFF", "黑色": "#000000", "红色": "#E22C2C",
+    "橙色": "#FF8000", "黄色": "#FFDD00", "绿色": "#00B050",
+    "青色": "#00BCD4", "蓝色": "#2C54DC", "紫色": "#8B00FF",
+    "粉色": "#FF80C0", "棕色": "#8B4513", "灰色": "#808080",
+    "金色": "#D4AF37", "银色": "#C0C0C0", "透明": "#E8F4F8",
+}
+# g 后不能跟字母、斜杠（半角/全角）或"空白+斜杠"序列——排除 "g/cm³" 密度
+# 与其全角/空格变体（SR-F-072/081）
+_OCR_WEIGHT_RE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*(kg|g)\b(?!\s*[/\uFF0F])", re.IGNORECASE
+)
+
+
+def _tc3_canonical_request(host: str, action: str, hashed_payload: str) -> str:
+    """Canonical request for a Tencent Cloud API POST (TC3 doc 213/30654).
+
+    content-type carries "; charset=utf-8" — the signed header value must
+    match the sent header exactly or the server-side signature check fails.
+    """
+    canonical_headers = (
+        f"content-type:application/json; charset=utf-8\nhost:{host}\n"
+        f"x-tc-action:{action.lower()}\n"
+    )
+    signed_headers = "content-type;host;x-tc-action"
+    return f"POST\n/\n\n{canonical_headers}\n{signed_headers}\n{hashed_payload}"
+
+
+def _tc3_headers(
+    secret_id: str, secret_key: str, payload: str, region: str | None = None
+) -> dict[str, str]:
+    """TC3-HMAC-SHA256 auth headers for a Tencent Cloud API POST.
+
+    Algorithm per cloud.tencent.com/document/api/213/30654: canonical
+    request (POST, /, empty query, lowercased sorted headers) → string to
+    sign (`Date/ocr/tc3_request`) → derived signing key chain.
+    """
+    timestamp = int(datetime.now(UTC).timestamp())
+    date = datetime.fromtimestamp(timestamp, UTC).strftime("%Y-%m-%d")
+    hashed_payload = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    canonical_request = _tc3_canonical_request(
+        TC_OCR_HOST, TC_OCR_ACTION, hashed_payload
+    )
+    credential_scope = f"{date}/{TC_OCR_SERVICE}/tc3_request"
+    # StringToSign's last line is the hash of the CANONICAL REQUEST (which
+    # itself ends with the payload hash) — not the payload hash directly.
+    hashed_canonical_request = hashlib.sha256(
+        canonical_request.encode("utf-8")
+    ).hexdigest()
+    signed_headers = "content-type;host;x-tc-action"
+    string_to_sign = (
+        f"TC3-HMAC-SHA256\n{timestamp}\n{credential_scope}\n"
+        f"{hashed_canonical_request}"
+    )
+
+    def _hmac(key: bytes, message: str) -> bytes:
+        return hmac.new(key, message.encode("utf-8"), hashlib.sha256).digest()
+
+    k_signing = _hmac(
+        _hmac(
+            _hmac(("TC3" + secret_key).encode("utf-8"), date), TC_OCR_SERVICE
+        ),
+        "tc3_request",
+    )
+    signature = hmac.new(
+        k_signing, string_to_sign.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    headers = {
+        "Authorization": (
+            f"TC3-HMAC-SHA256 Credential={secret_id}/{credential_scope}, "
+            f"SignedHeaders={signed_headers}, Signature={signature}"
+        ),
+        "X-TC-Action": TC_OCR_ACTION,
+        "X-TC-Version": TC_OCR_VERSION,
+        "X-TC-Timestamp": str(timestamp),
+        "Content-Type": "application/json; charset=utf-8",
+    }
+    if region:
+        headers["X-TC-Region"] = region
+    return headers
+
+
+def parse_ocr_text(lines: list[str]) -> list[dict[str, Any]]:
+    """Turn OCR text lines into one item suggestion via keyword rules.
+
+    Honest scope: material keywords, spool weight and Chinese color words
+    are extractable; anything requiring understanding of the label stays
+    empty for the user to fill at confirm time. Output matches
+    parse_suggestions' suggestion shape so the rest of the pipeline is
+    engine-agnostic.
+    """
+    cleaned = [line.strip() for line in lines if str(line).strip()]
+    if not cleaned:
+        return []
+    text_all = " ".join(cleaned)
+    material = next(
+        (m for m in _OCR_MATERIALS if re.search(rf"\b{re.escape(m)}\b", text_all, re.IGNORECASE)),
+        None,
+    )
+    weight_match = _OCR_WEIGHT_RE.search(text_all)
+    full_weight_g = None
+    if weight_match:
+        value = float(weight_match.group(1))
+        full_weight_g = value * 1000 if weight_match.group(2).lower() == "kg" else value
+        full_weight_g = min(full_weight_g, QUANTITY_MAX)
+    color_word = next(
+        (key for line in cleaned for key in _OCR_COLOR_WORDS if key in line),
+        None,
+    )
+    # 名称行与材质检测同口径（\b 词边界），避免子串误命中（SR-F-073）
+    name_line = next(
+        (
+            line
+            for line in cleaned
+            if material and re.search(rf"\b{re.escape(material)}\b", line, re.IGNORECASE)
+        ),
+        max(cleaned, key=len),
+    )
+    extra: dict[str, Any] = {}
+    if material:
+        extra[EXTRA_MATERIAL] = material
+    if color_word:
+        extra[EXTRA_COLOR] = _OCR_COLOR_WORDS[color_word]
+    if full_weight_g:
+        extra[EXTRA_FULL_WEIGHT_G] = full_weight_g
+    suggestion: dict[str, Any] = {
+        "name": name_line[:60],
+        "category": CATEGORY_FILAMENT if material else CATEGORY_OTHER,
+        "quantity": 0.0,
+        "location": "",
+    }
+    if extra:
+        suggestion["extra"] = extra
+    return [suggestion]
+
+
+async def _recognize_ocr(
+    manager: ScanManager, image: bytes
+) -> list[dict[str, Any]]:
+    """Recognize via Tencent Cloud GeneralBasicOCR (在线免费 OCR)."""
+    secret_id = str(manager._opt(CONF_OCR_SECRET_ID) or "").strip()
+    secret_key = str(manager._opt(CONF_OCR_SECRET_KEY) or "").strip()
+    if not secret_id or not secret_key:
+        raise ValueError("未配置腾讯云 OCR 的 SecretId/SecretKey（请在集成选项里填写）")
+    if len(image) > _TC_OCR_MAX_IMAGE:
+        raise ValueError(
+            f"图片超过腾讯云 OCR 约 7MB 的原始大小限制（{len(image) // (1024 * 1024)}MB），"
+            "请压缩后重试"
+        )
+    payload = json.dumps({"ImageBase64": base64.b64encode(image).decode("ascii")})
+    headers = _tc3_headers(secret_id, secret_key, payload)
+    session = async_get_clientsession(manager.hass)
+    async with session.post(
+        TC_OCR_URL,
+        data=payload.encode("utf-8"),
+        headers=headers,
+        timeout=ClientTimeout(total=SCAN_TIMEOUT_SECONDS),
+    ) as resp:
+        resp.raise_for_status()
+        data = await resp.json()
+    response = data.get("Response") or {}
+    error = response.get("Error")
+    if error:
+        code = error.get("Code", "")
+        message = error.get("Message", "")
+        _LOGGER.warning("腾讯 OCR 返回错误 %s：%s", code, message)
+        if "AuthFailure" in code:
+            raise ValueError("腾讯 OCR 鉴权失败：请检查 SecretId/SecretKey")
+        if "LimitExceeded" in code:
+            raise ValueError(f"腾讯 OCR 调用受限（免费额度/频率）：{message or code}")
+        raise ValueError(f"腾讯 OCR 错误 {code}：{message}")
+    lines = [
+        str(item.get("DetectedText") or "")
+        for item in response.get("TextDetections") or []
+    ]
+    suggestions = parse_ocr_text(lines)
+    if not suggestions:
+        raise ValueError("OCR 未识别到有效文字")
+    return suggestions
+
+
 class ScanManager:
     """Per-entry scan pipeline: webhook → vision LLM → pending queue → notify."""
 
@@ -283,6 +487,20 @@ class ScanManager:
 
     def _opt(self, key: str, default: Any = None) -> Any:
         return self.entry.options.get(key, self.entry.data.get(key, default))
+
+    def _missing_credential_error(self) -> str | None:
+        """Engine-aware credential check; None = ready to recognize.
+
+        OCR-only setups (engine=ocr + Tencent keys, no LLM key) were locked
+        out by the engine-blind vision-api-key check (SR-F-070).
+        """
+        if str(self._opt(CONF_SCAN_ENGINE) or DEFAULT_SCAN_ENGINE) == SCAN_ENGINE_OCR:
+            if not self._opt(CONF_OCR_SECRET_ID) or not self._opt(CONF_OCR_SECRET_KEY):
+                return "未配置腾讯云 OCR 的 SecretId/SecretKey（请在集成选项里填写）"
+            return None
+        if not self._opt(CONF_SCAN_API_KEY):
+            return "未配置识别 API key（请在集成选项里填写）"
+        return None
 
     @property
     def webhook_url(self) -> str:
@@ -353,8 +571,9 @@ class ScanManager:
             return web.json_response({"ok": False, "error": str(err)})
         if not self._opt(CONF_SCAN_ENABLED):
             return web.json_response({"ok": False, "error": "扫描功能未启用"})
-        if not self._opt(CONF_SCAN_API_KEY):
-            return web.json_response({"ok": False, "error": "未配置识别 API key"})
+        credential_error = self._missing_credential_error()
+        if credential_error:
+            return web.json_response({"ok": False, "error": credential_error})
 
         try:
             suggestions = await self._recognize(image)
@@ -397,11 +616,20 @@ class ScanManager:
     # ------------------------------------------------------------------
 
     async def _recognize(self, image: bytes) -> list[dict[str, Any]]:
-        """Ask the configured vision model for item suggestions.
+        """Ask the configured recognition engine for item suggestions.
 
-        Raises ValueError when the reply cannot be parsed into suggestions;
+        Raises ValueError when the reply cannot be turned into suggestions;
         the webhook handler answers ok:false in that case.
         """
+        engine = str(self._opt(CONF_SCAN_ENGINE) or DEFAULT_SCAN_ENGINE)
+        if engine not in SCAN_ENGINES:
+            engine = DEFAULT_SCAN_ENGINE
+        if engine == SCAN_ENGINE_OCR:
+            return await _recognize_ocr(self, image)
+        return await self._recognize_llm(image)
+
+    async def _recognize_llm(self, image: bytes) -> list[dict[str, Any]]:
+        """Vision-model path (OpenAI-compatible chat/completions)."""
         session = async_get_clientsession(self.hass)
         base_url = str(
             self._opt(CONF_SCAN_BASE_URL, DEFAULT_SCAN_BASE_URL)

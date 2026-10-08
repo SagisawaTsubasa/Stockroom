@@ -29,7 +29,10 @@
           "scan_base_url": "Vision API base URL",
           "scan_api_key": "Vision API key",
           "scan_model": "Vision model",
-          "bambu_tray_entities": "Bambu Lab tray sensors"
+          "bambu_tray_entities": "Bambu Lab tray sensors",
+          "scan_engine": "Recognition engine",
+          "scan_ocr_secret_id": "Tencent Cloud OCR SecretId",
+          "scan_ocr_secret_key": "Tencent Cloud OCR SecretKey"
         },
         "data_description": {
           "default_low_threshold": "Used when the add_item service does not specify low_threshold.",
@@ -39,7 +42,10 @@
           "scan_base_url": "OpenAI-compatible endpoint base URL of your vision provider (example in README).",
           "scan_api_key": "API key of the vision service (stored in the entry options).",
           "scan_model": "Vision model name, e.g. glm-4.5v",
-          "bambu_tray_entities": "Select the Bambu Lab AMS tray sensors that should be deducted automatically after each finished print. AMS HT and the external spool are not supported in V1. Leave empty to disable."
+          "bambu_tray_entities": "Select the Bambu Lab AMS tray sensors that should be deducted automatically after each finished print. AMS HT and the external spool are not supported in V1. Leave empty to disable.",
+          "scan_engine": "Vision model (OpenAI-compatible endpoint; can point at a local Ollama) or online OCR (Tencent Cloud GeneralBasicOCR, ~1000 free calls/month).",
+          "scan_ocr_secret_id": "Only used by the online OCR engine.",
+          "scan_ocr_secret_key": "Only used by the online OCR engine."
         }
       },
       "ams_map": {

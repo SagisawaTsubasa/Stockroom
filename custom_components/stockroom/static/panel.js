@@ -74,7 +74,7 @@ const I18N = {
     deleteGroupText: "确定删除槽位组「{name}」？更换历史保留。",
     changeFilterTitle: "更换滤芯",
     changeFilterManual: "条目「{item}」扣减 1 并写入更换历史。",
-    tabScan: "拍照识别",
+    tabScan: "图片识别",
     manualGroup: "纯手动",
     sourceEntity: "水源实体（寿命追踪源，可留空=纯手动）",
     sourceHint: "搜索或输入实体 ID",
@@ -93,7 +93,8 @@ const I18N = {
     cascade: "级联系数",
     addLevel: "加一级",
     scanNotEnabled: "拍照扫描未启用：请到集成配置项的选项里开启「拍照扫描入库」并填写识别 API key（默认智谱 glm-4.5v，兼容任意 OpenAI 接口）。",
-    scanPick: "选择照片",
+    scanCamera: "拍照",
+    scanUpload: "上传图片",
     scanRecognize: "识别",
     scanTooLarge: "图片超过 11MB 上限",
     scanQueued: "识别完成，{n} 条建议已入待确认队列",
@@ -184,7 +185,7 @@ const I18N = {
     deleteGroupText: "Delete slot group \"{name}\"? History is kept.",
     changeFilterTitle: "Change filter",
     changeFilterManual: "Deducts 1 from \"{item}\" and writes a history record.",
-    tabScan: "Photo scan",
+    tabScan: "Image scan",
     manualGroup: "manual",
     sourceEntity: "Source entity (life tracking source; empty = manual)",
     sourceHint: "Search or type an entity ID",
@@ -203,7 +204,8 @@ const I18N = {
     cascade: "Cascade factor",
     addLevel: "Add level",
     scanNotEnabled: "Photo scanning is not enabled: turn it on in the integration options and fill in the vision API key (Zhipu glm-4.5v by default; any OpenAI-compatible endpoint works).",
-    scanPick: "Pick a photo",
+    scanCamera: "Camera",
+    scanUpload: "Upload image",
     scanRecognize: "Recognize",
     scanTooLarge: "Image exceeds the 11MB limit",
     scanQueued: "Recognized — {n} suggestion(s) queued",
@@ -690,9 +692,9 @@ class StockroomPanel extends HTMLElement {
 
   _bindSpool(wh, tray, action) {
     const isCreate = action === "create";
-    const color = tray.color_trusted ? (tray.color || "").slice(0, 7) : "";
+    // 中文色名进名称，hex 只进条目数据（用户要求，SR 批 V0.4.1）
     const nameInput = isCreate
-      ? this._input(`${tray.name} ${color}`.trim())
+      ? this._input(`${tray.name} ${tray.color_name || ""}`.trim())
       : null;
     const itemSelect = isCreate ? null : (() => {
       const select = el("select");
@@ -970,34 +972,55 @@ class StockroomPanel extends HTMLElement {
       return;
     }
 
-    // Upload + recognize
-    const fileInput = el("input", {
+    // Upload + recognize: two entry points (camera capture / file upload)
+    // feeding the same handler.
+    const handleFile = () => {
+      const file = this._pendingFile;
+      if (!file) return;
+      if (file.size > 11 * 1024 * 1024) {
+        this._toast(t("scanTooLarge"), true);
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        // State first, then rebuild: the declarative restore in
+        // _renderScan shows the preview on the CURRENT dom (a poll
+        // re-render during the async read may have rebuilt it already).
+        this._scanImage = String(reader.result);
+        this._render();
+      };
+      reader.readAsDataURL(file);
+    };
+    const cameraInput = el("input", {
+      type: "file",
+      accept: "image/*",
+      capture: "environment",
+      style: "display:none",
+      onchange: () => {
+        this._pendingFile = cameraInput.files && cameraInput.files[0];
+        handleFile();
+      },
+    });
+    const uploadInput = el("input", {
       type: "file",
       accept: "image/*",
       style: "display:none",
       onchange: () => {
-        const file = fileInput.files && fileInput.files[0];
-        if (!file) return;
-        if (file.size > 11 * 1024 * 1024) {
-          this._toast(t("scanTooLarge"), true);
-          return;
-        }
-        const reader = new FileReader();
-        reader.onload = () => {
-          // State first, then rebuild: the declarative restore in
-          // _renderScan shows the preview on the CURRENT dom (a poll
-          // re-render during the async read may have rebuilt it already).
-          this._scanImage = String(reader.result);
-          this._render();
-        };
-        reader.readAsDataURL(file);
+        this._pendingFile = uploadInput.files && uploadInput.files[0];
+        handleFile();
       },
     });
     const pickBtn = el(
       "button",
-      { class: "srp-btn primary", onclick: () => fileInput.click() },
+      { class: "srp-btn primary", onclick: () => cameraInput.click() },
       el("ha-icon", { icon: "mdi:camera" }),
-      t("scanPick")
+      t("scanCamera")
+    );
+    const uploadBtn = el(
+      "button",
+      { class: "srp-btn primary", onclick: () => uploadInput.click() },
+      el("ha-icon", { icon: "mdi:tray-arrow-up" }),
+      t("scanUpload")
     );
     const recognizeBtn = el(
       "button",
@@ -1050,7 +1073,7 @@ class StockroomPanel extends HTMLElement {
       el(
         "div",
         { class: "srp-card srp-scan-upload" },
-        el("div", { class: "srp-scan-actions" }, pickBtn, fileInput),
+        el("div", { class: "srp-scan-actions" }, pickBtn, uploadBtn, cameraInput, uploadInput),
         previewWrap,
         el("div", { class: "srp-hint", text: t("scanFormatHint") })
       )

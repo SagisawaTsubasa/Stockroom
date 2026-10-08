@@ -34,20 +34,27 @@ from .const import (
     CONF_BAMBU_TRAY_ENTITIES,
     CONF_BAMBU_TRAY_MAP,
     CONF_DEFAULT_LOW_THRESHOLD,
+    CONF_OCR_SECRET_ID,
+    CONF_OCR_SECRET_KEY,
     CONF_SCAN_API_KEY,
     CONF_SCAN_BASE_URL,
     CONF_SCAN_DEVICE_ID,
     CONF_SCAN_ENABLED,
+    CONF_SCAN_ENGINE,
     CONF_SCAN_MODEL,
     CONF_SUMMARY_BY_CATEGORY,
     CONF_WAREHOUSE_NAME,
     DEFAULT_LOW_THRESHOLD,
     DEFAULT_SCAN_BASE_URL,
     DEFAULT_SCAN_ENABLED,
+    DEFAULT_SCAN_ENGINE,
     DEFAULT_SCAN_MODEL,
     DEFAULT_SUMMARY_BY_CATEGORY,
     DEFAULT_WAREHOUSE_NAME,
     DOMAIN,
+    SCAN_ENGINE_LLM,
+    SCAN_ENGINE_OCR,
+    SCAN_ENGINES,
 )
 from .inventory import InventoryEngine
 
@@ -154,6 +161,32 @@ class StockroomOptionsFlow(OptionsFlow):
                     CONF_SCAN_ENABLED,
                     default=bool(self._opt(entry, CONF_SCAN_ENABLED, DEFAULT_SCAN_ENABLED)),
                 ): BooleanSelector(),
+                vol.Required(
+                    CONF_SCAN_ENGINE,
+                    default=str(
+                        self._opt(entry, CONF_SCAN_ENGINE, DEFAULT_SCAN_ENGINE)
+                    ),
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[
+                            {
+                                "value": SCAN_ENGINE_LLM,
+                                "label": "视觉模型（OpenAI 兼容端点，可指向本地 Ollama）",
+                            },
+                            {"value": SCAN_ENGINE_OCR, "label": "在线 OCR（腾讯云通用印刷体，免费额度）"},
+                        ]
+                    )
+                ),
+                vol.Optional(
+                    CONF_OCR_SECRET_ID,
+                    description={
+                        "suggested_value": self._opt(entry, CONF_OCR_SECRET_ID, "")
+                    },
+                ): TextSelector(),
+                vol.Optional(
+                    CONF_OCR_SECRET_KEY,
+                    description={"suggested_value": self._opt(entry, CONF_OCR_SECRET_KEY, "")},
+                ): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
                 vol.Optional(
                     CONF_SCAN_DEVICE_ID,
                     description={"suggested_value": self._opt(entry, CONF_SCAN_DEVICE_ID, "")},
@@ -249,6 +282,9 @@ class StockroomOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         """Assemble the final options payload."""
         base_url = str(base_input.get(CONF_SCAN_BASE_URL) or "").strip().rstrip("/")
+        engine = str(
+            base_input.get(CONF_SCAN_ENGINE) or DEFAULT_SCAN_ENGINE
+        ).strip()
         options = {
             CONF_DEFAULT_LOW_THRESHOLD: float(
                 base_input.get(CONF_DEFAULT_LOW_THRESHOLD, DEFAULT_LOW_THRESHOLD)
@@ -259,6 +295,11 @@ class StockroomOptionsFlow(OptionsFlow):
             CONF_SCAN_ENABLED: bool(
                 base_input.get(CONF_SCAN_ENABLED, DEFAULT_SCAN_ENABLED)
             ),
+            CONF_SCAN_ENGINE: engine if engine in SCAN_ENGINES else DEFAULT_SCAN_ENGINE,
+            CONF_OCR_SECRET_ID: str(base_input.get(CONF_OCR_SECRET_ID) or "").strip(),
+            CONF_OCR_SECRET_KEY: str(
+                base_input.get(CONF_OCR_SECRET_KEY) or ""
+            ).strip(),
             CONF_SCAN_DEVICE_ID: str(
                 base_input.get(CONF_SCAN_DEVICE_ID) or ""
             ),

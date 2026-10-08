@@ -362,7 +362,7 @@ log_filter_change:
 
 scan_confirm:
   name: 扫描确认入库
-  description: 把拍照识别的待确认建议转为真实条目；suggestion 填建议 ID 或 all。可带字段覆盖建议值。
+  description: 把图片识别的待确认建议转为真实条目；suggestion 填建议 ID 或 all。可带字段覆盖建议值。
   fields:
     entry_id:
       name: 配置项 ID
@@ -452,7 +452,7 @@ scan_confirm:
 
 scan_dismiss:
   name: 扫描忽略建议
-  description: 丢弃拍照识别的待确认建议；suggestion 填建议 ID 或 all。
+  description: 丢弃图片识别的待确认建议；suggestion 填建议 ID 或 all。
   fields:
     entry_id:
       name: 配置项 ID

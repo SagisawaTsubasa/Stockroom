@@ -125,6 +125,20 @@ def sniff_image_kind(image: bytes) -> str | None:
     return None
 
 
+def validate_image_bytes(image: bytes) -> None:
+    """Common image validation shared by the webhook and the panel scan view.
+
+    Raises ValueError with a caller-friendly message on empty content, the
+    size cap or an unknown container.
+    """
+    if not image:
+        raise ValueError("图片内容为空")
+    if len(image) > SCAN_MAX_IMAGE_BYTES:
+        raise ValueError(f"图片超过 {SCAN_MAX_IMAGE_BYTES // (1024 * 1024)}MB 上限")
+    if sniff_image_kind(image) is None:
+        raise ValueError("内容不是可识别的图片（支持 JPEG/PNG/GIF/WebP；iPhone 请先转 JPEG）")
+
+
 async def extract_image_bytes(request: Any, hass: HomeAssistant | None = None) -> bytes:
     """Pull the photo out of a JSON-base64 or multipart upload.
 
@@ -169,12 +183,7 @@ async def extract_image_bytes(request: Any, hass: HomeAssistant | None = None) -
                 image = base64.b64decode(str(field), validate=False)
             except (binascii.Error, ValueError) as err:
                 raise ValueError("image 字段既不是文件也不是 base64") from err
-    if not image:
-        raise ValueError("图片内容为空")
-    if len(image) > SCAN_MAX_IMAGE_BYTES:
-        raise ValueError(f"图片超过 {SCAN_MAX_IMAGE_BYTES // (1024 * 1024)}MB 上限")
-    if sniff_image_kind(image) is None:
-        raise ValueError("内容不是可识别的图片（支持 JPEG/PNG/GIF/WebP；iPhone 请先转 JPEG）")
+    validate_image_bytes(image)
     return image
 
 

@@ -518,3 +518,143 @@
   background: var(--error-color, #db4437);
   color: #fff;
 }
+
+/* ---------------- V0.4.0: group editor & scan tab ---------------- */
+
+.srp-source-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
+  margin-top: -4px;
+  border: 1px dashed var(--divider-color, #444);
+  border-radius: 8px;
+}
+
+.srp-level-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  border: 1px solid var(--divider-color, #333);
+  border-radius: 8px;
+  position: relative;
+}
+
+.srp-level-editor .srp-field-row .srp-field input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.srp-level-remove {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+}
+
+.srp-scan-upload {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.srp-scan-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.srp-scan-preview-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.srp-scan-preview {
+  max-width: 240px;
+  max-height: 180px;
+  border-radius: 8px;
+  object-fit: contain;
+  border: 1px solid var(--divider-color, #333);
+}
+
+.srp-scan-setup {
+  padding: 18px;
+}
+
+.srp-scan-pending {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.srp-scan-item {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+}
+
+.srp-scan-item-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.srp-scan-name {
+  font-weight: 600;
+}
+
+.srp-scan-item-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* ---------------- V0.4.1: bambu spool sync block ---------------- */
+
+.srp-spool-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.srp-spool-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-height: 30px;
+}
+
+.srp-spool-swatch {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  border: 1px solid var(--divider-color, #444);
+  flex-shrink: 0;
+}
+
+.srp-spool-swatch.empty {
+  background: transparent;
+}
+
+.srp-spool-label {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.srp-spool-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 32ch;
+}
+
+.srp-spool-bound {
+  color: var(--success-color, #4caf50);
+  white-space: nowrap;
+}

@@ -313,7 +313,7 @@ update_item:
 
 log_filter_change:
   name: 手动更换滤芯
-  description: 手动槽位换芯一条龙：扣减绑定条目 1 个并写入更换历史（滤芯槽位联动用）。
+  description: 手动槽位换芯一条龙：扣减绑定条目 1 个、写入更换历史并重置该级寿命记账（用量清零、计时重新起算，级联随之解除）。
   fields:
     entry_id:
       name: 配置项 ID

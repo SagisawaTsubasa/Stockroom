@@ -11,5 +11,5 @@ __pycache__/
 venv/
 
 # Local review-fix snapshots & generated panel smoke screenshots
-.backup-pre-fix-*/
+.backup-pre-*/
 dev/shots/

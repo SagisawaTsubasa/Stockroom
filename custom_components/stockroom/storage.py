@@ -32,6 +32,7 @@ from homeassistant.helpers.storage import Store
 from .const import (
     HISTORY_MAX,
     META_FILTER_HISTORY,
+    META_FILTER_RUNTIME,
     META_FILTER_SLOTS,
     META_LAST_DEDUCT,
     META_SCAN_PENDING,
@@ -90,11 +91,16 @@ class StockroomStore:
         Slot groups and pending scan suggestions are dead the moment the
         warehouse is gone; last-deduct idempotency records are keyed
         "{entry_id}|{printer_prefix}", so only that entry's prefix goes.
-        filter_history is a global append-only log by design and survives.
+        The removed groups' life runtime goes with them. filter_history is a
+        global append-only log by design and survives.
         """
         self.data["items"].pop(entry_id, None)
         meta = self.data["meta"]
-        meta.get(META_FILTER_SLOTS, {}).pop(entry_id, None)
+        gone_groups = meta.get(META_FILTER_SLOTS, {}).pop(entry_id, None) or []
+        runtime = meta.get(META_FILTER_RUNTIME)
+        if runtime:
+            for group in gone_groups:
+                runtime.pop(group.get("group_id"), None)
         meta.get(META_SCAN_PENDING, {}).pop(entry_id, None)
         prefix = f"{entry_id}|"
         last_deduct = meta.get(META_LAST_DEDUCT)

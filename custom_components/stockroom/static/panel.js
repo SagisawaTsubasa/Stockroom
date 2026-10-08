@@ -16,9 +16,14 @@
 const API_OVERVIEW = "/api/stockroom/panel/overview";
 const API_SLOTS = "/api/stockroom/panel/slots";
 const API_HISTORY = "/api/stockroom/panel/history";
+const API_SCAN = "/api/stockroom/panel/scan";
+const API_BAMBU_SYNC = "/api/stockroom/panel/bambu_sync";
 const STATIC_BASE = "/stockroom";
 
 const POLL_MS = 5000;
+
+// Spool states that mean "nothing usable loaded" — no bind/create offered.
+const EMPTY_SPOOL_NAMES = new Set(["", "?", "empty", "unknown", "unavailable"]);
 
 const I18N = {
   "zh-Hans": {
@@ -63,17 +68,52 @@ const I18N = {
     defaultGroupName: "滤芯组",
     editGroup: "编辑槽位组",
     groupName: "组名",
-    fltDevice: "绑定滤芯寿命追踪设备",
-    fltNone: "无（纯手动槽位）",
-    fltMissing: "设备未在线或未装集成",
     levelN: "{n} 级",
-    slotBind: "绑定条目",
     slotBindNone: "不绑定（仅记录更换）",
     deleteGroup: "删除组",
     deleteGroupText: "确定删除槽位组「{name}」？更换历史保留。",
     changeFilterTitle: "更换滤芯",
-    changeFilterFlt: "将按压「{title}」{n} 级重置按钮：FLT 记录清零，绑定的条目「{item}」自动扣减 1。",
     changeFilterManual: "条目「{item}」扣减 1 并写入更换历史。",
+    tabScan: "拍照识别",
+    manualGroup: "纯手动",
+    sourceEntity: "水源实体（寿命追踪源，可留空=纯手动）",
+    sourceHint: "搜索或输入实体 ID",
+    sourceType: "积分类型",
+    sourceDuration: "按时长（用时积分）",
+    sourceCount: "按次数（启用计数）",
+    targetState: "目标状态",
+    targetStateRequired: "绑定水源实体时必须填写目标状态",
+    entityNotFound: "实体不存在：请从列表选择",
+    debounce: "去抖秒数",
+    levels: "滤芯级（额定参数决定寿命算法）",
+    ratedDays: "额定天数",
+    ratedUsage: "额定用量",
+    warnThreshold: "预警阈值%",
+    cascadeHint: "级联系数",
+    cascade: "级联系数",
+    addLevel: "加一级",
+    scanNotEnabled: "拍照扫描未启用：请到集成配置项的选项里开启「拍照扫描入库」并填写识别 API key（默认智谱 glm-4.5v，兼容任意 OpenAI 接口）。",
+    scanPick: "选择照片",
+    scanRecognize: "识别",
+    scanTooLarge: "图片超过 11MB 上限",
+    scanQueued: "识别完成，{n} 条建议已入待确认队列",
+    scanFormatHint: "支持 JPEG/PNG/GIF/WebP，最大 11MB；拍标签/包装最可靠",
+    scanPendingTitle: "待确认建议",
+    scanPendingEmpty: "队列为空",
+    scanSuggestionMeta: "{q}{u} · {cat} · {loc}",
+    scanConfirm: "入库",
+    scanDismiss: "忽略",
+    spoolTitle: "打印机料盘",
+    spoolSync: "同步参数",
+    spoolStaleOther: "参数已变（其他仓库）",
+    spoolCreate: "新建并绑定",
+    spoolBind: "绑定已有",
+    spoolCreateTitle: "从{label}新建条目",
+    spoolBindTitle: "把{label}绑定到已有条目",
+    spoolAutoNote: "材质与颜色将自动写入条目。",
+    itemLabel: "条目",
+    spoolLabel: "AMS {ams} 料盘 {n}",
+    spoolBindNote: "仅建立映射；绑定后可用「同步参数」把料盘参数写入条目。",
     noBoundItem: "该槽位未绑定条目，先编辑组补上绑定才能换芯。",
     changedOk: "更换指令已发出，扣件与历史稍后自动完成。",
     slotsEmpty: "还没有槽位组。槽位组把一台设备的多级滤芯映射到仓库条目：寿命到点换芯时自动扣件、留更换记录。",
@@ -138,17 +178,52 @@ const I18N = {
     defaultGroupName: "Filter group",
     editGroup: "Edit slot group",
     groupName: "Group name",
-    fltDevice: "Bound Filter-Life-Tracker device",
-    fltNone: "None (manual slots)",
-    fltMissing: "device offline or integration missing",
     levelN: "Level {n}",
-    slotBind: "Bound item",
     slotBindNone: "None (record only)",
     deleteGroup: "Delete group",
     deleteGroupText: "Delete slot group \"{name}\"? History is kept.",
     changeFilterTitle: "Change filter",
-    changeFilterFlt: "Presses the reset button of \"{title}\" level {n}: FLT zeroes its counters and item \"{item}\" is deducted by 1 automatically.",
     changeFilterManual: "Deducts 1 from \"{item}\" and writes a history record.",
+    tabScan: "Photo scan",
+    manualGroup: "manual",
+    sourceEntity: "Source entity (life tracking source; empty = manual)",
+    sourceHint: "Search or type an entity ID",
+    sourceType: "Integration type",
+    sourceDuration: "Duration (time in state)",
+    sourceCount: "Count (activations)",
+    targetState: "Target state",
+    targetStateRequired: "Target state is required when a source entity is set",
+    entityNotFound: "Unknown entity: pick one from the list",
+    debounce: "Debounce seconds",
+    levels: "Filter levels (ratings drive the life math)",
+    ratedDays: "Rated days",
+    ratedUsage: "Rated usage",
+    warnThreshold: "Warn threshold %",
+    cascadeHint: "cascade",
+    cascade: "Cascade factor",
+    addLevel: "Add level",
+    scanNotEnabled: "Photo scanning is not enabled: turn it on in the integration options and fill in the vision API key (Zhipu glm-4.5v by default; any OpenAI-compatible endpoint works).",
+    scanPick: "Pick a photo",
+    scanRecognize: "Recognize",
+    scanTooLarge: "Image exceeds the 11MB limit",
+    scanQueued: "Recognized — {n} suggestion(s) queued",
+    scanFormatHint: "JPEG/PNG/GIF/WebP up to 11MB; labels and packaging work best",
+    scanPendingTitle: "Pending suggestions",
+    scanPendingEmpty: "Queue is empty",
+    scanSuggestionMeta: "{q}{u} · {cat} · {loc}",
+    scanConfirm: "Add",
+    scanDismiss: "Dismiss",
+    spoolTitle: "Printer spools",
+    spoolSync: "Sync params",
+    spoolStaleOther: "stale (other warehouse)",
+    spoolCreate: "Create & bind",
+    spoolBind: "Bind",
+    spoolCreateTitle: "Create item from {label}",
+    spoolBindTitle: "Bind {label} to an item",
+    spoolAutoNote: "Material and color are written to the item automatically.",
+    itemLabel: "Item",
+    spoolLabel: "AMS {ams} Spool {n}",
+    spoolBindNote: "Maps only; use \"Sync params\" afterwards to write the spool parameters into the item.",
     noBoundItem: "This slot has no bound item; edit the group first.",
     changedOk: "Change issued; deduction and history will follow in seconds.",
     slotsEmpty: "No slot groups yet. A group maps each filter level of a device to a warehouse item: changing a filter deducts stock and logs history.",
@@ -279,6 +354,7 @@ class StockroomPanel extends HTMLElement {
     const path = value && value.path ? value.path : "";
     if (path.includes("slots")) this._view = "slots";
     else if (path.includes("history")) this._view = "history";
+    else if (path.includes("scan")) this._view = "scan";
   }
 
   connectedCallback() {
@@ -328,6 +404,16 @@ class StockroomPanel extends HTMLElement {
       this._error = String(err.message || err);
     }
     this._loading = false;
+    // 扫描视图有未处理的选图时跳过轮询重绘，否则 5s 一刷会把预览和
+    // 识别按钮抹掉（SR-F-029）——但仅在页面上确实已渲染过扫描视图时：
+    // 元素断开重连后 shadowRoot 是空壳，跳过会留白（R2 待确认②）。
+    if (
+      this._view === "scan" &&
+      this._scanImage &&
+      this.shadowRoot.querySelector(".srp-scan-upload")
+    ) {
+      return;
+    }
     this._render();
   }
 
@@ -341,10 +427,6 @@ class StockroomPanel extends HTMLElement {
 
   _slotGroups(warehouseId) {
     return (this._data?.filter_slots || {})[warehouseId] || [];
-  }
-
-  _fltDevice(entryId) {
-    return (this._data?.flt_devices || []).find((d) => d.entry_id === entryId) || null;
   }
 
   async _loadHistory() {
@@ -382,6 +464,7 @@ class StockroomPanel extends HTMLElement {
     }
     if (this._view === "inventory") this._renderInventory(container);
     else if (this._view === "slots") this._renderSlots(container);
+    else if (this._view === "scan") this._renderScan(container);
     else this._renderHistory(container);
   }
 
@@ -439,6 +522,7 @@ class StockroomPanel extends HTMLElement {
           { class: "srp-tabs" },
           tab("inventory", "tabInventory"),
           tab("slots", "tabSlots"),
+          tab("scan", "tabScan"),
           tab("history", "tabHistory")
         )
       ),
@@ -480,6 +564,9 @@ class StockroomPanel extends HTMLElement {
 
     container.append(summaryRow, head);
 
+    const bambuBlock = this._renderBambuBlock(wh);
+    if (bambuBlock) container.append(bambuBlock);
+
     const itemIds = Object.keys(wh.items || {});
     if (!itemIds.length) {
       container.append(el("div", { class: "srp-hint", text: t("emptyWarehouse") }));
@@ -488,6 +575,166 @@ class StockroomPanel extends HTMLElement {
     const grid = el("div", { class: "srp-grid" });
     for (const id of itemIds) grid.append(this._renderItemCard(wh, wh.items[id]));
     container.append(grid);
+  }
+
+  // ---------------- bambu spool sync block (打印机料盘) ----------------
+
+  _spoolSwatch(tray) {
+    // Fresh node per row: el() appends (moves) nodes, so a shared swatch
+    // would vanish from all but the last row (SR-F-062).
+    const color = (tray.color || "").slice(0, 7);
+    return tray.color_trusted && tray.color
+      ? el("span", { class: "srp-spool-swatch", style: `background:${color}` })
+      : el("span", { class: "srp-spool-swatch empty" });
+  }
+
+  _renderBambuBlock(wh) {
+    const trays = this._data?.bambu_trays || [];
+    if (!trays.length) return null;
+    const rows = [];
+    for (const tray of trays) {
+      const color = (tray.color || "").slice(0, 7);
+      const label = t("spoolLabel", { ams: tray.ams_no, n: tray.tray_no });
+      if (!tray.owners.length) {
+        const usable = tray.name && !EMPTY_SPOOL_NAMES.has(tray.name.toLowerCase());
+        const row = el(
+          "div",
+          { class: "srp-spool-row" },
+          this._spoolSwatch(tray),
+          el("span", { class: "srp-spool-label", text: label }),
+          el("span", { class: "srp-spool-name", text: tray.name || "—" }),
+          tray.type ? el("span", { class: "srp-hint", text: tray.type }) : null,
+          el("span", { style: "flex:1" })
+        );
+        if (usable) {
+          row.append(
+            el(
+              "button",
+              {
+                class: "srp-btn small primary",
+                onclick: () => this._bindSpool(wh, tray, "create"),
+              },
+              t("spoolCreate")
+            ),
+            el(
+              "button",
+              { class: "srp-btn small", onclick: () => this._bindSpool(wh, tray, "bind") },
+              t("spoolBind")
+            )
+          );
+        }
+        rows.push(row);
+        continue;
+      }
+      // One row per binding: a spool CAN be mapped in several warehouses —
+      // hiding the non-first owners was the SR-F-055 defect.
+      for (const owner of tray.owners) {
+        const row = el(
+          "div",
+          { class: "srp-spool-row" },
+          this._spoolSwatch(tray),
+          el("span", { class: "srp-spool-label", text: label }),
+          el("span", { class: "srp-spool-name", text: tray.name || "—" }),
+          tray.type ? el("span", { class: "srp-hint", text: tray.type }) : null,
+          el("span", { style: "flex:1" }),
+          el("span", {
+            class: "srp-spool-bound",
+            text: `→ ${owner.item_name || owner.item_id}`,
+          })
+        );
+        if (owner.needs_update) {
+          if (owner.entry_id === wh.entry_id) {
+            row.append(
+              el(
+                "button",
+                {
+                  class: "srp-btn small",
+                  onclick: async () => {
+                    try {
+                      // type/color only when the spool actually carries
+                      // them — update_item clears on empty strings
+                      // (SR-F-058); untrusted colors are never written
+                      // (SR-F-056).
+                      const data = { entry_id: wh.entry_id, item: owner.item_id };
+                      if (tray.type) data.material = tray.type;
+                      if (tray.color_trusted && color) data.color = color;
+                      await this._svc("stockroom", "update_item", data);
+                      this._toast(t("saved"));
+                    } catch (err) {
+                      this._toast(String(err.message || err), true);
+                    }
+                    await this._refresh();
+                  },
+                },
+                t("spoolSync")
+              )
+            );
+          } else {
+            row.append(el("span", { class: "srp-hint", text: t("spoolStaleOther") }));
+          }
+        }
+        rows.push(row);
+      }
+    }
+    return el(
+      "div",
+      { class: "srp-card srp-spool-block" },
+      el(
+        "div",
+        { class: "srp-group-head" },
+        el("span", { class: "srp-group-name", text: t("spoolTitle") })
+      ),
+      ...rows
+    );
+  }
+
+  _bindSpool(wh, tray, action) {
+    const isCreate = action === "create";
+    const color = tray.color_trusted ? (tray.color || "").slice(0, 7) : "";
+    const nameInput = isCreate
+      ? this._input(`${tray.name} ${color}`.trim())
+      : null;
+    const itemSelect = isCreate ? null : (() => {
+      const select = el("select");
+      for (const item of Object.values(wh.items || {})) {
+        select.append(
+          el("option", { value: item.id, text: `${item.name} (${item.id})` })
+        );
+      }
+      return select;
+    })();
+    const children = isCreate
+      ? [
+          el("div", { class: "srp-hint", text: t("spoolAutoNote") }),
+          this._field(t("name"), nameInput),
+        ]
+      : [el("div", { class: "srp-hint", text: t("spoolBindNote") }), this._field(t("itemLabel"), itemSelect)];
+    const label = t("spoolLabel", { ams: tray.ams_no, n: tray.tray_no });
+    this._openDialog((dialog) => {
+      this._dialogFrame(
+        dialog,
+        isCreate ? t("spoolCreateTitle", { label }) : t("spoolBindTitle", { label }),
+        children,
+        async () => {
+          await this._fetch(API_BAMBU_SYNC, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              entry_id: wh.entry_id,
+              tray_entity: tray.entity_id,
+              action,
+              item_id: isCreate ? undefined : itemSelect.value,
+              // The user-edited name must reach the server (SR-F-053).
+              name: isCreate ? nameInput.value.trim() : undefined,
+            }),
+          });
+          // The mapping write reloads the integration; refresh lazily so
+          // the overview comes back with the new binding.
+          this._toast(t("saved"));
+          setTimeout(() => this._refresh(), 2500);
+        }
+      );
+    });
   }
 
   _renderItemCard(wh, item) {
@@ -585,14 +832,13 @@ class StockroomPanel extends HTMLElement {
   }
 
   _renderGroupCard(wh, group) {
-    const flt = group.flt_entry_id ? this._fltDevice(group.flt_entry_id) : null;
-    const bound = group.flt_entry_id && !flt;
+    const tracked = !!group.source_entity;
 
     const chain = el("div", { class: "srp-slot-chain" });
     const levels = [...(group.levels || [])].sort((a, b) => a.level - b.level);
     levels.forEach((slot, index) => {
       if (index > 0) chain.append(el("span", { class: "srp-slot-arrow", text: "→" }));
-      chain.append(this._renderSlot(wh, group, slot, flt));
+      chain.append(this._renderSlot(wh, group, slot));
     });
 
     return el(
@@ -603,9 +849,9 @@ class StockroomPanel extends HTMLElement {
         { class: "srp-group-head" },
         el("span", { class: "srp-group-name", text: group.name }),
         el("span", {
-          class: `srp-mode-badge${flt ? "" : " manual"}`,
-          text: flt ? flt.title : bound ? t("fltMissing") : t("fltNone"),
-          title: group.flt_entry_id || "",
+          class: `srp-mode-badge${tracked ? "" : " manual"}`,
+          text: tracked ? group.source_entity : t("manualGroup"),
+          title: tracked ? group.source_entity : "",
         }),
         el(
           "span",
@@ -628,11 +874,9 @@ class StockroomPanel extends HTMLElement {
     );
   }
 
-  _renderSlot(wh, group, slot, flt) {
-    const fltLevel = flt
-      ? (flt.levels || []).find((l) => l.level === slot.level) || null
-      : null;
-    const lifePct = fltLevel ? fltLevel.life_pct : null;
+  _renderSlot(wh, group, slot) {
+    const life = (group.life || {})[slot.level] || null;
+    const lifePct = life ? life.pct : null;
     const item = slot.item_id ? wh.items[slot.item_id] : null;
     const low = item && this._isLow(item);
 
@@ -642,7 +886,7 @@ class StockroomPanel extends HTMLElement {
         class: "srp-btn small primary",
         disabled: item ? undefined : "disabled",
         title: item ? undefined : t("noBoundItem"),
-        onclick: () => this._changeFilter(group, slot, item, flt),
+        onclick: () => this._changeFilter(group, slot, item),
       },
       el("ha-icon", { icon: "mdi:filter-refresh" }),
       t("change")
@@ -655,13 +899,13 @@ class StockroomPanel extends HTMLElement {
         "div",
         { class: "srp-slot-head" },
         el("span", { class: "srp-level-badge", text: t("levelN", { n: slot.level }) }),
-        fltLevel?.expired
+        life?.expired
           ? el("ha-icon", { icon: "mdi:alert-circle", style: "color:var(--error-color,#db4437)" })
           : null
       ),
       el("div", {
-        class: `srp-life ${flt ? lifeClass(lifePct) : "none"}`,
-        text: flt ? fmtLife(lifePct) : "—",
+        class: `srp-life ${life ? lifeClass(lifePct) : "none"}`,
+        text: life ? fmtLife(lifePct) : "—",
       }),
       el("div", {
         class: "srp-slot-item",
@@ -678,37 +922,214 @@ class StockroomPanel extends HTMLElement {
     );
   }
 
-  async _changeFilter(group, slot, item, flt) {
+  _changeFilter(group, slot, item) {
     if (!item) return;
-    const text = flt
-      ? t("changeFilterFlt", {
-          title: flt.title,
-          n: slot.level,
-          item: item.name,
-        })
-      : t("changeFilterManual", { item: item.name });
+    // 换芯 = 一个动作三件事：重置该级寿命记账 + 扣绑定条目 + 记更换历史
+    // （服务端 log_filter_change 原子完成）。
+    const text = t("changeFilterManual", { item: item.name });
     const warehouseId = this._warehouse;
     this._openConfirm(t("changeFilterTitle"), text, async () => {
       try {
-        const resetEntity = flt ? fltLevelEntity(flt, slot.level) : null;
-        if (resetEntity) {
-          await this._svc("button", "press", { entity_id: resetEntity });
-        } else {
-          // Manual slot, or FLT bound but currently undiscoverable: the
-          // log_filter_change service deducts and records atomically.
-          await this._svc("stockroom", "log_filter_change", {
-            entry_id: warehouseId,
-            group_id: group.group_id,
-            level: slot.level,
-            item: item.id,
-          });
-        }
+        await this._svc("stockroom", "log_filter_change", {
+          entry_id: warehouseId,
+          group_id: group.group_id,
+          level: slot.level,
+          item: item.id,
+        });
         this._toast(t("changedOk"));
         setTimeout(() => this._refresh(), 2500);
       } catch (err) {
         this._toast(String(err.message || err), true);
       }
     });
+  }
+
+  // ---------------- scan view (拍照识别) ----------------
+
+  _renderScan(container) {
+    const wh = this._currentWarehouse();
+    if (!wh) return;
+    const scan = wh.scan || { enabled: false, pending: [] };
+    container.append(
+      el(
+        "div",
+        { class: "srp-section-head" },
+        el("h2", { text: t("tabScan") }),
+        el("span", { style: "flex:1" })
+      )
+    );
+
+    if (!scan.enabled) {
+      container.append(
+        el(
+          "div",
+          { class: "srp-card srp-scan-setup" },
+          el("div", { class: "srp-hint", text: t("scanNotEnabled") })
+        )
+      );
+      return;
+    }
+
+    // Upload + recognize
+    const fileInput = el("input", {
+      type: "file",
+      accept: "image/*",
+      style: "display:none",
+      onchange: () => {
+        const file = fileInput.files && fileInput.files[0];
+        if (!file) return;
+        if (file.size > 11 * 1024 * 1024) {
+          this._toast(t("scanTooLarge"), true);
+          return;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+          // State first, then rebuild: the declarative restore in
+          // _renderScan shows the preview on the CURRENT dom (a poll
+          // re-render during the async read may have rebuilt it already).
+          this._scanImage = String(reader.result);
+          this._render();
+        };
+        reader.readAsDataURL(file);
+      },
+    });
+    const pickBtn = el(
+      "button",
+      { class: "srp-btn primary", onclick: () => fileInput.click() },
+      el("ha-icon", { icon: "mdi:camera" }),
+      t("scanPick")
+    );
+    const recognizeBtn = el(
+      "button",
+      {
+        class: "srp-btn primary",
+        style: "display:none",
+        onclick: async () => {
+          if (!this._scanImage) return;
+          recognizeBtn.disabled = "disabled";
+          try {
+            const payload = await this._fetch(API_SCAN, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                entry_id: wh.entry_id,
+                image_base64: this._scanImage.split(",")[1] || "",
+              }),
+            });
+            this._toast(
+              t("scanQueued", { n: (payload.suggestions || []).length })
+            );
+          } catch (err) {
+            this._toast(String(err.message || err), true);
+          } finally {
+            recognizeBtn.disabled = undefined;
+            this._scanImage = null;
+            await this._refresh();
+          }
+        },
+      },
+      el("ha-icon", { icon: "mdi:auto-fix" }),
+      t("scanRecognize")
+    );
+    const preview = el("img", { class: "srp-scan-preview", alt: "" });
+    const previewWrap = el(
+      "div",
+      { class: "srp-scan-preview-row", style: "display:none" },
+      preview,
+      recognizeBtn
+    );
+    // Declarative restore: a poll re-render between picking a file and the
+    // FileReader finishing would otherwise rebuild this subtree and strand
+    // the preview inside detached nodes.
+    if (this._scanImage) {
+      preview.src = this._scanImage;
+      previewWrap.style.display = "";
+      recognizeBtn.style.display = "";
+    }
+    container.append(
+      el(
+        "div",
+        { class: "srp-card srp-scan-upload" },
+        el("div", { class: "srp-scan-actions" }, pickBtn, fileInput),
+        previewWrap,
+        el("div", { class: "srp-hint", text: t("scanFormatHint") })
+      )
+    );
+
+    // Pending suggestions queue
+    container.append(el("h3", { text: t("scanPendingTitle") }));
+    const pending = scan.pending || [];
+    if (!pending.length) {
+      container.append(el("div", { class: "srp-hint", text: t("scanPendingEmpty") }));
+    } else {
+      const list = el("div", { class: "srp-scan-pending" });
+      for (const suggestion of pending) {
+        list.append(
+          el(
+            "div",
+            { class: "srp-card srp-scan-item" },
+            el(
+              "div",
+              { class: "srp-scan-item-main" },
+              el("span", { class: "srp-scan-name", text: suggestion.name }),
+              el("span", {
+                class: "srp-hint",
+                text: t("scanSuggestionMeta", {
+                  q: fmtQty(suggestion.quantity || 0),
+                  u: suggestion.unit || "",
+                  cat: suggestion.category || "",
+                  loc: suggestion.location || "",
+                }),
+              })
+            ),
+            el(
+              "div",
+              { class: "srp-scan-item-actions" },
+              el(
+                "button",
+                {
+                  class: "srp-btn small primary",
+                  onclick: async () => {
+                    try {
+                      await this._svc("stockroom", "scan_confirm", {
+                        entry_id: wh.entry_id,
+                        suggestion: suggestion.id,
+                      });
+                      this._toast(t("saved"));
+                    } catch (err) {
+                      this._toast(String(err.message || err), true);
+                    }
+                    this._scanImage = null;
+                    await this._refresh();
+                  },
+                },
+                t("scanConfirm")
+              ),
+              el(
+                "button",
+                {
+                  class: "srp-btn small danger",
+                  onclick: async () => {
+                    try {
+                      await this._svc("stockroom", "scan_dismiss", {
+                        entry_id: wh.entry_id,
+                        suggestion: suggestion.id,
+                      });
+                    } catch (err) {
+                      this._toast(String(err.message || err), true);
+                    }
+                    this._scanImage = null;
+                    await this._refresh();
+                  },
+                },
+                t("scanDismiss")
+              )
+            )
+          )
+        );
+      }
+      container.append(list);
+    }
   }
 
   // ---------------- history view ----------------
@@ -1047,28 +1468,72 @@ class StockroomPanel extends HTMLElement {
     const state = {
       group_id: group?.group_id || uuid(),
       name: this._input(group?.name || ""),
-      flt_entry_id: group?.flt_entry_id || "",
+      source_entity: group?.source_entity || "",
+      source_type: group?.source_type || "duration",
+      target_state: group?.target_state || "",
+      debounce: group?.debounce ?? 10,
       levels: group
-        ? group.levels.map((s) => ({ level: s.level, item_id: s.item_id }))
+        ? group.levels.map((s) => ({
+            level: s.level,
+            item_id: s.item_id || null,
+            rated_time_days: s.rated_time_days ?? "",
+            rated_usage: s.rated_usage ?? "",
+            warn_threshold: s.warn_threshold ?? 20,
+            cascade_factor: s.cascade_factor ?? "",
+          }))
         : [],
     };
 
-    const fltSelect = el("select");
-    fltSelect.append(el("option", { value: "", text: t("fltNone") }));
-    for (const device of this._data?.flt_devices || []) {
-      fltSelect.append(el("option", { value: device.entry_id, text: device.title }));
+    // Entity picker: searchable input over the live HA state machine, so the
+    // picker's data source is the system entity list (not an integration's
+    // config entries — the retired FLT design that left this menu empty).
+    const entityList = el("datalist", { id: "srp-entity-list" });
+    const entityOptions = [];
+    const states = (this._hass && this._hass.states) || {};
+    for (const [entityId, stateObj] of Object.entries(states)) {
+      if (!/^(sensor|binary_sensor|input_boolean|switch)\./.test(entityId)) continue;
+      entityOptions.push({
+        id: entityId,
+        label: `${stateObj.attributes?.friendly_name || entityId} (${entityId})`,
+      });
     }
-    if (state.flt_entry_id && !this._fltDevice(state.flt_entry_id)) {
-      // Stale binding (FLT removed): keep the value visible so the user can
-      // clear or replace it instead of silently dropping the config.
-      fltSelect.append(
-        el("option", {
-          value: state.flt_entry_id,
-          text: `${state.flt_entry_id} (${t("fltMissing")})`,
-        })
+    entityOptions.sort((a, b) => a.label.localeCompare(b.label));
+    for (const option of entityOptions) {
+      entityList.append(el("option", { value: option.id, label: option.label }));
+    }
+
+    const sourceInput = this._input(state.source_entity);
+    sourceInput.setAttribute("list", "srp-entity-list");
+    sourceInput.placeholder = t("sourceHint");
+    const typeSelect = el("select");
+    typeSelect.append(
+      el("option", { value: "duration", text: t("sourceDuration") }),
+      el("option", { value: "count", text: t("sourceCount") })
+    );
+    typeSelect.value = state.source_type;
+    const targetInput = this._input(state.target_state);
+    targetInput.placeholder = "running / heating / …";
+    const debounceInput = this._input(String(state.debounce), "number", "1");
+
+    const sourceWrap = el("div", { class: "srp-source-fields" });
+    const rebuildSourceFields = () => {
+      sourceWrap.innerHTML = "";
+      if (!sourceInput.value.trim()) return;
+      sourceWrap.append(
+        el("div", { class: "srp-field-row" },
+          this._field(t("sourceType"), typeSelect),
+          this._field(t("targetState"), targetInput)
+        ),
+        typeSelect.value === "count"
+          ? this._field(t("debounce"), debounceInput)
+          : null
       );
-    }
-    fltSelect.value = state.flt_entry_id || "";
+    };
+    typeSelect.addEventListener("change", rebuildSourceFields);
+    // 水源实体输入是字段区的触发源：不监听 input 的话，新建组时字段区
+    // 永不出现（SR-F-026）。
+    sourceInput.addEventListener("input", rebuildSourceFields);
+    rebuildSourceFields();
 
     const levelsWrap = el("div");
     const itemOptions = (selected) => {
@@ -1088,59 +1553,142 @@ class StockroomPanel extends HTMLElement {
 
     const rebuildLevels = () => {
       levelsWrap.innerHTML = "";
-      const fltId = fltSelect.value;
-      state.flt_entry_id = fltId || null;
-      let levelNumbers;
-      if (fltId) {
-        const device = this._fltDevice(fltId);
-        levelNumbers = device ? device.levels.map((l) => l.level) : [];
-      } else {
-        levelNumbers = state.levels.length
-          ? state.levels.map((s) => s.level)
-          : [1, 2, 3];
-      }
-      const previous = new Map(state.levels.map((s) => [s.level, s.item_id]));
-      state.levels = levelNumbers.map((level) => ({
-        level,
-        item_id: previous.has(level) ? previous.get(level) : null,
+      if (!state.levels.length) state.levels = [1, 2, 3].map((level) => ({
+        level, item_id: null, rated_time_days: "", rated_usage: "",
+        warn_threshold: 20, cascade_factor: "",
       }));
-      for (const slot of state.levels) {
-        const select = itemOptions(slot.item_id);
-        select.addEventListener("change", () => {
-          slot.item_id = select.value || null;
+      state.levels.forEach((slot, index) => {
+        const item = itemOptions(slot.item_id);
+        item.addEventListener("change", () => {
+          slot.item_id = item.value || null;
         });
+        const ratedTime = this._input(String(slot.rated_time_days ?? ""), "number", "1");
+        ratedTime.addEventListener("input", () => {
+          slot.rated_time_days = ratedTime.value === "" ? "" : parseFloat(ratedTime.value);
+        });
+        const ratedUsage = this._input(String(slot.rated_usage ?? ""), "number", "1");
+        ratedUsage.addEventListener("input", () => {
+          slot.rated_usage = ratedUsage.value === "" ? "" : parseFloat(ratedUsage.value);
+        });
+        const warn = this._input(String(slot.warn_threshold ?? 20), "number", "1");
+        warn.addEventListener("input", () => {
+          slot.warn_threshold = warn.value === "" ? 20 : parseFloat(warn.value);
+        });
+        const cascade = this._input(String(slot.cascade_factor ?? ""), "number", "0.1");
+        cascade.placeholder = t("cascadeHint");
+        cascade.addEventListener("input", () => {
+          slot.cascade_factor = cascade.value === "" ? "" : parseFloat(cascade.value);
+        });
+        const removeBtn = el(
+          "button",
+          {
+            class: "srp-btn small danger",
+            onclick: () => {
+              state.levels.splice(index, 1);
+              state.levels.forEach((s, i) => {
+                s.level = i + 1;
+              });
+              rebuildLevels();
+            },
+          },
+          el("ha-icon", { icon: "mdi:close" })
+        );
         levelsWrap.append(
           el(
             "div",
-            { class: "srp-slot-bind-row" },
-            el("span", { class: "srp-level-badge", text: t("levelN", { n: slot.level }) }),
-            select
+            { class: "srp-level-editor" },
+            el(
+              "div",
+              { class: "srp-slot-bind-row" },
+              el("span", { class: "srp-level-badge", text: t("levelN", { n: slot.level }) }),
+              item
+            ),
+            el(
+              "div",
+              { class: "srp-field-row" },
+              this._field(t("ratedDays"), ratedTime),
+              this._field(t("ratedUsage"), ratedUsage)
+            ),
+            el(
+              "div",
+              { class: "srp-field-row" },
+              this._field(t("warnThreshold"), warn),
+              index > 0 ? this._field(t("cascade"), cascade) : el("span")
+            ),
+            el("div", { class: "srp-level-remove" }, removeBtn)
           )
         );
-      }
+      });
     };
-    fltSelect.addEventListener("change", rebuildLevels);
     rebuildLevels();
 
+    const addLevelBtn = el(
+      "button",
+      {
+        class: "srp-btn small",
+        onclick: () => {
+          if (state.levels.length >= 8) return;
+          state.levels.push({
+            level: state.levels.length + 1,
+            item_id: null,
+            rated_time_days: "",
+            rated_usage: "",
+            warn_threshold: 20,
+            cascade_factor: "",
+          });
+          rebuildLevels();
+        },
+      },
+      el("ha-icon", { icon: "mdi:plus" }),
+      t("addLevel")
+    );
+
     this._openDialog((dialog) => {
+      dialog.append(entityList);
       this._dialogFrame(
         dialog,
         isEdit ? t("editGroup") : t("addGroup"),
         [
           this._field(t("groupName"), state.name),
-          this._field(t("fltDevice"), fltSelect),
-          el("div", { class: "srp-field" }, el("label", { text: t("slotBind") }), levelsWrap),
+          this._field(t("sourceEntity"), sourceInput),
+          sourceWrap,
+          el("div", { class: "srp-field" }, el("label", { text: t("levels") }), levelsWrap),
+          el("div", { class: "srp-field" }, addLevelBtn),
         ],
         async () => {
           const name = state.name.value.trim() || t("defaultGroupName");
+          const source = sourceInput.value.trim();
+          if (source && !targetInput.value.trim()) {
+            this._toast(t("targetStateRequired"), true);
+            return false;
+          }
+          if (source && !this._hass.states[source]) {
+            this._toast(t("entityNotFound"), true);
+            return false;
+          }
           const groups = this._slotGroups(this._warehouse).filter(
             (g) => g.group_id !== state.group_id
           );
           groups.push({
             group_id: state.group_id,
             name,
-            flt_entry_id: state.flt_entry_id,
-            levels: state.levels,
+            source_entity: source || null,
+            source_type: source ? typeSelect.value : null,
+            target_state: source ? targetInput.value.trim() : null,
+            debounce: source ? parseInt(debounceInput.value, 10) || 10 : null,
+            levels: state.levels.map((slot, index) => {
+              const data = {
+                level: index + 1,
+                item_id: slot.item_id || null,
+                rated_time_days: slot.rated_time_days === "" ? null : slot.rated_time_days,
+                rated_usage: slot.rated_usage === "" ? null : slot.rated_usage,
+                warn_threshold: slot.warn_threshold ?? 20,
+              };
+              if (index > 0 && slot.cascade_factor !== "") {
+                data.cascade_factor = slot.cascade_factor;
+              }
+              return data;
+            }),
           });
           await this._saveSlots(groups);
         }
@@ -1163,11 +1711,6 @@ class StockroomPanel extends HTMLElement {
     this.shadowRoot.append(toast);
     setTimeout(() => toast.remove(), isError ? 5000 : 3000);
   }
-}
-
-function fltLevelEntity(flt, level) {
-  const found = (flt.levels || []).find((l) => l.level === level);
-  return found ? found.reset_entity_id : null;
 }
 
 customElements.define("stockroom-panel", StockroomPanel);

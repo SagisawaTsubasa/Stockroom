@@ -148,6 +148,10 @@ KIND_LOW_STOCK = "low_stock"
 # Bambu Lab AMS auto-deduction
 # ----------------------------------------------------------------------
 
+# greghesp/ha-bambulab integration domain — the tray sensors Stockroom reads
+# for the panel's spool-sync view belong to its config entries.
+BAMBU_DOMAIN = "bambu_lab"
+
 BAMBU_STATUS_FINISH = "finish"
 # print_status values from which a transition to `finish` counts as a real
 # completion; anything else (None/replay, offline reconnect) must not deduct.
@@ -164,25 +168,37 @@ META_LAST_DEDUCT = "last_deduct"
 META_SCAN_PENDING = "scan_pending"
 
 # ----------------------------------------------------------------------
-# Filter slot linking (滤芯槽位联动)
+# Filter slots (滤芯槽位, FLT-model port)
 # ----------------------------------------------------------------------
 
-# meta section: {warehouse_entry_id: [slot_group, ...]} where slot_group is
-# {"group_id": str, "name": str, "flt_entry_id": str | None,
-#  "levels": [{"level": int, "item_id": str | None}, ...]}.
-# item_id=None marks a manual slot (no FLT binding, panel-driven changes).
+# meta section: {warehouse_entry_id: [slot_group, ...]}. A group mirrors the
+# Filter-Life-Tracker design (upstream project, now retired): ONE shared
+# source entity per group, N levels hanging off it.
+# slot_group = {"group_id": str, "name": str,
+#               "source_entity": str | None,       # None = manual-only group
+#               "source_type": "duration"|"count", "target_state": str,
+#               "debounce": int,                   # count-type debounce seconds
+#               "levels": [{"level": int, "item_id": str | None,
+#                           "rated_time_days": float | None,
+#                           "rated_usage": float | None,   # hours (duration) or counts
+#                           "warn_threshold": float,       # % below which warn shows
+#                           "cascade_factor": float}, ...]}  # level 2+ only
+# item_id=None marks a manual slot (panel-driven changes only).
 META_FILTER_SLOTS = "filter_slots"
+# meta section: {group_id: {"<level>": {"usage": float, "installed": iso}}},
+# the runtime half of the dual-track life computation.
+META_FILTER_RUNTIME = "filter_runtime"
 # meta section: append-only change log, newest last, FIFO-capped at HISTORY_MAX.
 META_FILTER_HISTORY = "filter_history"
 HISTORY_MAX = 500
 
-# Filter-Life-Tracker integration facts. Kept as literals on purpose: FLT is
-# an optional sibling integration and must stay a runtime-only dependency
-# (its const.py defines the same strings; drift is covered by panel tests).
-FLT_DOMAIN = "filter_life_tracker"
-FLT_EVENT_RESET = "filter_life_tracker_filter_reset"
-FLT_ENTRY_TYPE_DEVICE = "device"
-FLT_NOTE_AUTO_DEDUCT = "滤芯更换自动扣减"
+SOURCE_TYPE_COUNT = "count"
+SECONDS_PER_DAY = 86400
+SECONDS_PER_HOUR = 3600
+
+DEFAULT_WARN_THRESHOLD = 20.0
+DEFAULT_CASCADE_FACTOR = 1.5
+DEFAULT_DEBOUNCE = 10
 
 # ----------------------------------------------------------------------
 # Sidebar panel (仓管面板)

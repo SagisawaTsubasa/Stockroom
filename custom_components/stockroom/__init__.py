@@ -13,7 +13,6 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_track_time_interval
 
-from . import filter_link as filter_link_mod
 from . import web as web_mod
 from .const import (
     ALL_SERVICES,
@@ -38,6 +37,7 @@ from .const import (
     SERVICE_STOCKTAKE,
     SERVICE_UPDATE_ITEM,
 )
+from .filter_engine import ENGINE_DATA_KEY, FilterEngine, get_filter_engine
 from .inventory import InventoryEngine
 from .storage import (
     StockroomStore,
@@ -243,8 +243,12 @@ def _maybe_release_store(hass: HomeAssistant) -> None:
         return
     for key in ("flush_unsub", "stop_unsub"):
         unsub = domain_data.pop(key, None)
-        if unsub is not None:
+        if unsub is None:
+            continue
+        try:
             unsub()
+        except Exception:
+            _LOGGER.exception("取消 store 句柄 %s 失败——继续释放其余句柄", key)
 
 
 def _async_get_engine(hass: HomeAssistant, entry_id: str | None) -> InventoryEngine:
@@ -369,6 +373,12 @@ def _async_register_services(hass: HomeAssistant) -> None:
         item = engine.consume(
             call.data["item"], 1.0, note=call.data.get("note") or "手动更换滤芯"
         )
+        # FLT-model reset: zero this level's usage accounting so the cascade
+        # releases and both life tracks restart — 换芯 = 扣件 + 记历史 + 重置
+        # 记账，一个动作完成（面板按钮与服务同路）。
+        life_engine = get_filter_engine(hass)
+        if life_engine is not None:
+            life_engine.reset_level(group, level)
         append_filter_history(
             store,
             {
@@ -492,20 +502,27 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     return True
 
 
-def _ensure_filter_link(hass: HomeAssistant, store: StockroomStore) -> None:
-    """Subscribe the FLT reset-event listener once per HA run."""
+def _ensure_filter_engine(hass: HomeAssistant, store: StockroomStore) -> FilterEngine:
+    """Start the slot-life engine once per HA run (setup is idempotent)."""
     domain_data = hass.data.setdefault(DOMAIN, {})
-    if domain_data.get("filter_link_unsub") is not None:
-        return
-    domain_data["filter_link_unsub"] = filter_link_mod.setup_filter_link(hass, store)
+    engine = domain_data.get(ENGINE_DATA_KEY)
+    if engine is None:
+        engine = FilterEngine(hass, store)
+        domain_data[ENGINE_DATA_KEY] = engine
+    engine.async_setup()
+    return engine
 
 
-def _teardown_filter_link(hass: HomeAssistant) -> None:
-    """Drop the FLT reset-event listener when the last entry unloads."""
+def _teardown_filter_engine(hass: HomeAssistant) -> None:
+    """Stop slot-life collectors when the last entry unloads.
+
+    The engine instance is kept (Filter-Life-Tracker store precedent): a
+    later setup re-subscribes via _ensure_filter_engine's idempotent setup.
+    """
     domain_data = hass.data.get(DOMAIN) or {}
-    unsub = domain_data.pop("filter_link_unsub", None)
-    if unsub is not None:
-        unsub()
+    engine = domain_data.get(ENGINE_DATA_KEY)
+    if engine is not None:
+        engine.async_teardown()
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -516,7 +533,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {}).setdefault("entries", {})[entry.entry_id] = engine
 
     _async_register_services(hass)
-    _ensure_filter_link(hass, store)
+    _ensure_filter_engine(hass, store)
     await web_mod.async_setup_web(hass)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
@@ -534,14 +551,30 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unload_ok:
         engine = hass.data[DOMAIN].get("entries", {}).pop(entry.entry_id, None)
         if engine is not None:
-            engine.async_teardown()
+            # Same guard as the filter engine below (SR-F-052): a throwing
+            # teardown must not bypass the filter-engine settlement, the
+            # flush or the handle release further down this chain.
+            try:
+                engine.async_teardown()
+            except Exception:
+                _LOGGER.exception("仓库引擎卸载清理失败——继续卸载链")
+        last = not hass.data.get(DOMAIN, {}).get("entries")
+        if last:
+            # Slot-life settlement must land BEFORE the flush: it flags the
+            # store dirty with the in-flight usage segment, and flushing
+            # first would strand that segment in memory until the next
+            # setup — or lose it on restart (SR-F-049). A throwing teardown
+            # must not skip the flush either (SR-F-051).
+            try:
+                _teardown_filter_engine(hass)
+            except Exception:
+                _LOGGER.exception("滤芯槽位引擎卸载结算失败——继续落盘其余状态")
         store = hass.data[DOMAIN].get("store")
         if store is not None:
             await store.async_flush()
         _maybe_release_store(hass)
-        if not hass.data.get(DOMAIN, {}).get("entries"):
+        if last:
             _async_remove_services(hass)
-            _teardown_filter_link(hass)
             web_mod.async_unload_web(hass)
     return unload_ok
 
@@ -561,7 +594,17 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
         # spin up a temporary one so the item table still leaves the file.
         store = StockroomStore(hass)
         await store.async_load()
+    removed_groups = {
+        g.get("group_id") for g in filter_slot_groups(store).get(entry.entry_id, [])
+    }
     store.remove_entry_items(entry.entry_id)
+    # Rebuild the life engine's collectors so the removed warehouse's groups
+    # stop being tracked (listeners would otherwise linger until restart,
+    # SR-F-028) and drop their runtime records.
+    life_engine = get_filter_engine(hass)
+    if life_engine is not None:
+        life_engine.sync_runtimes([], removed_groups)
+        life_engine.reload_config()
     await store.async_flush()
 
 

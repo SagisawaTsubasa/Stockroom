@@ -50,18 +50,3 @@ jobs:
           import custom_components.stockroom.bambu
           print("all stockroom modules import cleanly under real HA")
           EOF
-
-  pytest:
-    name: Unit tests
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-      - name: Install dependencies
-        run: pip install homeassistant==2026.1.3 pytest
-      - name: Run unit tests
-        run: pytest tests/ -q

@@ -13,3 +13,7 @@ venv/
 # Local review-fix snapshots & generated panel smoke screenshots
 .backup-pre-*/
 dev/shots/
+
+# ---- 2026-10-09 仓库整理：测试源码移 project-tests ----
+tests/
+dev/

@@ -19,6 +19,9 @@ const API_HISTORY = "/api/stockroom/panel/history";
 const API_SCAN = "/api/stockroom/panel/scan";
 const API_BAMBU_SYNC = "/api/stockroom/panel/bambu_sync";
 const STATIC_BASE = "/stockroom";
+// Cache buster for style.css, inherited from this module's own URL
+// ("panel.js?ver=0.5.0" → "?ver=0.5.0"; WHA-F-052: stale CSS after updates).
+const MODULE_QUERY = new URL(import.meta.url).search;
 
 const POLL_MS = 5000;
 
@@ -363,7 +366,7 @@ class StockroomPanel extends HTMLElement {
     const root = this.shadowRoot;
     root.innerHTML = "";
     root.append(
-      el("link", { rel: "stylesheet", href: `${STATIC_BASE}/style.css` }),
+      el("link", { rel: "stylesheet", href: `${STATIC_BASE}/style.css${MODULE_QUERY}` }),
       el("div", { class: "srp-root" })
     );
     this._refresh();
@@ -408,7 +411,7 @@ class StockroomPanel extends HTMLElement {
     this._loading = false;
     // 扫描视图有未处理的选图时跳过轮询重绘，否则 5s 一刷会把预览和
     // 识别按钮抹掉（SR-F-029）——但仅在页面上确实已渲染过扫描视图时：
-    // 元素断开重连后 shadowRoot 是空壳，跳过会留白（R2 待确认②）。
+    // 元素断开重连后 shadowRoot 是空壳，跳过会留白（SR-F-046 覆盖）。
     if (
       this._view === "scan" &&
       this._scanImage &&
@@ -1736,4 +1739,9 @@ class StockroomPanel extends HTMLElement {
   }
 }
 
-customElements.define("stockroom-panel", StockroomPanel);
+// Guarded define (kit.defineOnce semantics without the shell kit): a
+// re-import under a new ?ver= must not throw "already defined" — the shell
+// detects version drift itself and asks for a refresh.
+if (!customElements.get("stockroom-panel")) {
+  customElements.define("stockroom-panel", StockroomPanel);
+}

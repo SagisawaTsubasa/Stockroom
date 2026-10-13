@@ -29,7 +29,8 @@ from homeassistant.components.http import (
     StaticPathConfig,
     require_admin,
 )
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.loader import async_get_loaded_integration
@@ -44,6 +45,10 @@ from .const import (
     DOMAIN,
     EXTRA_COLOR,
     EXTRA_MATERIAL,
+    HUB_BUS_EVENT_PAGE_CHANGED,
+    HUB_PAGE_ID,
+    HUB_PAGE_ORDER,
+    HUB_REGISTRY_KEY,
     PANEL_ELEMENT,
     PANEL_SIDEBAR_ICON,
     PANEL_SIDEBAR_TITLE,
@@ -734,6 +739,105 @@ def _validate_groups(hass: HomeAssistant, engine: Any, raw: Any) -> list[dict[st
     return normalized
 
 
+def _manifest_version(hass: HomeAssistant) -> str:
+    try:
+        return async_get_loaded_integration(hass, DOMAIN).version or "dev"
+    except Exception:  # noqa: BLE001 — version is only a cache buster
+        _LOGGER.debug("Could not resolve integration version for panel URL")
+        return "dev"
+
+
+def _descriptor(version: str) -> dict[str, Any]:
+    """Hub-shell page descriptor (fumiha_hub registry contract)."""
+    return {
+        "id": HUB_PAGE_ID,
+        "title": PANEL_SIDEBAR_TITLE,
+        "icon": PANEL_SIDEBAR_ICON,
+        "order": HUB_PAGE_ORDER,
+        "version": version,
+        "module_url": f"{URL_BASE}/panel.js?ver={version}",
+        "element": PANEL_ELEMENT,
+    }
+
+
+def _registration_present(hass: HomeAssistant, mode: str) -> bool:
+    """True when the registration a previous _register_page made is intact.
+
+    The mode name alone is not enough: deleting and re-adding the shell
+    entry destroys and recreates the registry dict (hub side), so flags may
+    say "hub" while the descriptor is gone — early-returning on the mode
+    name alone would then skip re-registration forever (SR-F-083).
+    """
+    if mode == "hub":
+        return HUB_PAGE_ID in (hass.data.get(HUB_REGISTRY_KEY) or {})
+    return PANEL_URL_PATH in (hass.data.get(frontend.DATA_PANELS) or {})
+
+
+def _register_page(hass: HomeAssistant, flags: dict) -> None:
+    """(Re-)register the panel in whichever mode fits right now.
+
+    Probe = ``HUB_REGISTRY_KEY`` key existence, kept truthful by the hub
+    (created in its setup, removed with the entry) — we never create the
+    dict ourselves, or the probe would stay true without a shell and the
+    page would be unreachable. A mode flip (shell installed/removed while
+    entries live) tears the old registration down first, symmetrically; an
+    equal mode with vanished registration facts (shell entry deleted and
+    re-added mid-run) falls through and re-registers.
+    """
+    mode = "hub" if HUB_REGISTRY_KEY in hass.data else "standalone"
+    current = flags.get("page_registered")
+    if current == mode and _registration_present(hass, mode):
+        return
+    if current is not None:
+        _teardown_page(hass, flags)
+
+    if mode == "hub":
+        registry = hass.data[HUB_REGISTRY_KEY]
+        if HUB_PAGE_ID not in registry:
+            registry[HUB_PAGE_ID] = _descriptor(_manifest_version(hass))
+            hass.bus.async_fire(
+                HUB_BUS_EVENT_PAGE_CHANGED, {"id": HUB_PAGE_ID, "action": "register"}
+            )
+            _LOGGER.info("仓管面板已注册到文羽面板壳（%s）", HUB_PAGE_ID)
+        flags["page_registered"] = "hub"
+        return
+
+    panels = hass.data.get(frontend.DATA_PANELS) or {}
+    if PANEL_URL_PATH not in panels:
+        frontend.async_register_built_in_panel(
+            hass,
+            component_name="custom",
+            frontend_url_path=PANEL_URL_PATH,
+            sidebar_title=PANEL_SIDEBAR_TITLE,
+            sidebar_icon=PANEL_SIDEBAR_ICON,
+            config={
+                "_panel_custom": {
+                    "name": PANEL_ELEMENT,
+                    "embed_iframe": False,
+                    "trust_external": False,
+                    "module_url": f"{URL_BASE}/panel.js?ver={_manifest_version(hass)}",
+                }
+            },
+            require_admin=True,
+        )
+        _LOGGER.info("未检测到文羽面板壳，仓管面板注册为独立侧边栏面板")
+    flags["page_registered"] = "standalone"
+
+
+def _teardown_page(hass: HomeAssistant, flags: dict) -> None:
+    """Undo _register_page in the recorded mode (hub descriptor vs sidebar)."""
+    mode = flags.pop("page_registered", None)
+    if mode == "hub":
+        registry = hass.data.get(HUB_REGISTRY_KEY)
+        if registry is not None and registry.pop(HUB_PAGE_ID, None) is not None:
+            hass.bus.async_fire(
+                HUB_BUS_EVENT_PAGE_CHANGED,
+                {"id": HUB_PAGE_ID, "action": "unregister"},
+            )
+    elif mode == "standalone":
+        frontend.async_remove_panel(hass, PANEL_URL_PATH, warn_if_unknown=False)
+
+
 async def async_setup_web(hass: HomeAssistant) -> None:
     """Register static assets, panel and API views (once per HA run)."""
     flags: dict = hass.data.setdefault(WEB_DATA_KEY, {})
@@ -753,32 +857,34 @@ async def async_setup_web(hass: HomeAssistant) -> None:
         )
         flags["static"] = True
 
-    panels = hass.data.get(frontend.DATA_PANELS) or {}
-    if PANEL_URL_PATH not in panels:
-        version = "dev"
-        try:
-            version = async_get_loaded_integration(hass, DOMAIN).version or version
-        except Exception:  # noqa: BLE001 — version is only a cache buster
-            _LOGGER.debug("Could not resolve integration version for panel URL")
-        frontend.async_register_built_in_panel(
-            hass,
-            component_name="custom",
-            frontend_url_path=PANEL_URL_PATH,
-            sidebar_title=PANEL_SIDEBAR_TITLE,
-            sidebar_icon=PANEL_SIDEBAR_ICON,
-            config={
-                "_panel_custom": {
-                    "name": PANEL_ELEMENT,
-                    "embed_iframe": False,
-                    "trust_external": False,
-                    "module_url": f"{URL_BASE}/panel.js?ver={version}",
-                }
-            },
-            require_admin=True,
+    _register_page(hass, flags)
+
+    if not flags.get("started_recheck"):
+        # The hub entry may load after ours during HA boot; at "started" the
+        # whole boot set is in, so re-judge the mode once (lux_balance move).
+        flags["started_recheck"] = hass.bus.async_listen_once(
+            EVENT_HOMEASSISTANT_STARTED, _make_started_recheck(hass, flags)
         )
+
+
+def _make_started_recheck(hass: HomeAssistant, flags: dict):
+    @callback
+    def _recheck(event: Event) -> None:
+        _LOGGER.debug("HA started: re-checking panel registration mode")
+        _register_page(hass, flags)
+
+    return _recheck
 
 
 @callback
 def async_unload_web(hass: HomeAssistant) -> None:
-    """Remove the sidebar panel (static paths/views survive entry reloads)."""
-    frontend.async_remove_panel(hass, PANEL_URL_PATH, warn_if_unknown=False)
+    """Tear down the panel when the last entry unloads (static paths/views
+    survive entry reloads)."""
+    flags: dict = hass.data.get(WEB_DATA_KEY) or {}
+    if not flags:
+        return
+    if flags.get("page_registered"):
+        _teardown_page(hass, flags)
+    if not flags.get("page_registered") and flags.get("started_recheck"):
+        unsub = flags.pop("started_recheck")
+        unsub()

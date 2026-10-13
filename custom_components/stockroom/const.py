@@ -225,6 +225,15 @@ PANEL_ELEMENT = "stockroom-panel"
 URL_BASE = f"/{DOMAIN}"
 API_BASE = f"/api/{DOMAIN}"
 
+# FumihaHub 页面接入契约（fumiha_hub/registry.py 模块文档）：两个字符串常量
+# + 一个 dict，按契约在本仓复制字面量，绝不 import 壳包。探针 = 键存在 ⇔
+# 壳条目已加载且未删除；绝不能自己 setdefault 创建该 dict（无壳环境下页面
+# 会因此永久不可达）。
+HUB_REGISTRY_KEY = "fumiha_hub_registry"
+HUB_BUS_EVENT_PAGE_CHANGED = "fumiha_hub_page_changed"
+HUB_PAGE_ID = "stockroom.main"
+HUB_PAGE_ORDER = 30
+
 # Vision-extraction prompt: labels/packaging first, quantities only when
 # grounded, JSON array output with no markdown fencing.
 SCAN_PROMPT = (

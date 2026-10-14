@@ -58,6 +58,11 @@ const I18N = {
     fullWeight: "满卷净重 (g)",
     note: "备注",
     amount: "数量",
+    amountInvalid: "数量需为大于 0 的数字",
+    amountInvalidStocktake: "实际数量不能为负数",
+    currentStock: "当前库存",
+    afterConsume: "消耗后剩余",
+    clippedToZero: "超出当前库存，将截断到 0",
     actual: "实际数量",
     cancel: "取消",
     confirm: "确认",
@@ -169,6 +174,11 @@ const I18N = {
     fullWeight: "Full weight (g)",
     note: "Note",
     amount: "Amount",
+    amountInvalid: "Quantity must be a number greater than 0",
+    amountInvalidStocktake: "Actual quantity cannot be negative",
+    currentStock: "Current stock",
+    afterConsume: "After consume",
+    clippedToZero: "exceeds stock — will be clamped to 0",
     actual: "Actual quantity",
     cancel: "Cancel",
     confirm: "OK",
@@ -765,7 +775,14 @@ class StockroomPanel extends HTMLElement {
     return el(
       "div",
       { class: `srp-card srp-item-card${this._isLow(item) ? " low" : ""}` },
-      this._isLow(item) ? el("span", { class: "srp-low-badge", text: t("lowStockBadge") }) : null,
+      this._isLow(item)
+        ? el("span", {
+            class: "srp-low-badge",
+            text:
+              t("lowStockBadge") +
+              `（阈值 ${Number(item.low_threshold)} ${item.unit || ""}）`,
+          })
+        : null,
       el(
         "div",
         { class: "srp-item-head" },
@@ -1419,6 +1436,29 @@ class StockroomPanel extends HTMLElement {
     const amount = this._input("", "number", "0.01");
     const note = this._input("");
     const isStocktake = kind === "stocktake";
+    // SR-UX-01: 当前库存上下文 + 消耗截断预览——服务端把库存截断到 0 是正确的
+    // 账务语义，但用户必须能在提交前看到"输入超量"这件事。
+    const curQty = Number(item.quantity) || 0;
+    const unit = item.unit || "";
+    const currentRow = el("div", {
+      class: "srp-hint",
+      text: `${t("currentStock")}: ${curQty} ${unit}`,
+    });
+    const previewRow = el("div", { class: "srp-hint" });
+    const updatePreview = () => {
+      const v = parseFloat(amount.value);
+      if (kind === "consume" && Number.isFinite(v) && v > 0) {
+        const after = Math.max(0, curQty - v);
+        const clipped = v > curQty;
+        previewRow.textContent = `${t("afterConsume")}: ${after} ${unit}` + (clipped ? `（${t("clippedToZero")}）` : "");
+        previewRow.style.color = clipped ? "var(--srp-danger, #c62828)" : "";
+        previewRow.hidden = false;
+      } else {
+        previewRow.hidden = true;
+      }
+    };
+    amount.addEventListener("input", updatePreview);
+    updatePreview();
     this._openDialog((dialog) => {
       this._dialogFrame(
         dialog,
@@ -1426,13 +1466,19 @@ class StockroomPanel extends HTMLElement {
           ? t("stocktakeTitle", { name: item.name })
           : t("qtyDialogTitle", { action: t(kind), name: item.name }),
         [
+          currentRow,
           this._field(isStocktake ? t("actual") : t("amount"), amount),
+          previewRow,
           this._field(t("note"), note),
         ],
         async () => {
           const value = parseFloat(amount.value);
           if (!Number.isFinite(value) || (isStocktake ? value < 0 : value <= 0)) {
-            this._toast(t("amount"), true);
+            // SR-UX-02: 错误提示要可行动——说明错在哪，盘点态字段名是"实际数量"
+            this._toast(
+              isStocktake ? t("amountInvalidStocktake") : t("amountInvalid"),
+              true
+            );
             return false;
           }
           const data = { entry_id: wh.entry_id, item: item.id };

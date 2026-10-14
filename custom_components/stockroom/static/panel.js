@@ -62,7 +62,8 @@ const I18N = {
     amountInvalidStocktake: "实际数量不能为负数",
     currentStock: "当前库存",
     afterConsume: "消耗后剩余",
-    clippedToZero: "超出当前库存，将截断到 0",
+    clippedToZero: "（超出当前库存，将截断到 0）",
+    thresholdBadge: "（阈值 {n} {u}）",
     actual: "实际数量",
     cancel: "取消",
     confirm: "确认",
@@ -178,7 +179,8 @@ const I18N = {
     amountInvalidStocktake: "Actual quantity cannot be negative",
     currentStock: "Current stock",
     afterConsume: "After consume",
-    clippedToZero: "exceeds stock — will be clamped to 0",
+    clippedToZero: " (exceeds stock — will be clamped to 0)",
+    thresholdBadge: " (threshold {n} {u})",
     actual: "Actual quantity",
     cancel: "Cancel",
     confirm: "OK",
@@ -778,9 +780,11 @@ class StockroomPanel extends HTMLElement {
       this._isLow(item)
         ? el("span", {
             class: "srp-low-badge",
-            text:
-              t("lowStockBadge") +
-              `（阈值 ${Number(item.low_threshold)} ${item.unit || ""}）`,
+            text: t("lowStockBadge") +
+              t("thresholdBadge", {
+                n: Number(item.low_threshold),
+                u: item.unit || "",
+              }),
           })
         : null,
       el(
@@ -1442,16 +1446,18 @@ class StockroomPanel extends HTMLElement {
     const unit = item.unit || "";
     const currentRow = el("div", {
       class: "srp-hint",
-      text: `${t("currentStock")}: ${curQty} ${unit}`,
+      text: `${t("currentStock")}: ${fmtQty(curQty)} ${unit}`.replace(/ +$/, ""),
     });
     const previewRow = el("div", { class: "srp-hint" });
     const updatePreview = () => {
       const v = parseFloat(amount.value);
       if (kind === "consume" && Number.isFinite(v) && v > 0) {
-        const after = Math.max(0, curQty - v);
+        const after = fmtQty(Math.max(0, curQty - v));
         const clipped = v > curQty;
-        previewRow.textContent = `${t("afterConsume")}: ${after} ${unit}` + (clipped ? `（${t("clippedToZero")}）` : "");
-        previewRow.style.color = clipped ? "var(--srp-danger, #c62828)" : "";
+        previewRow.textContent =
+          `${t("afterConsume")}: ${after} ${unit}`.replace(/ +$/, "") +
+          (clipped ? t("clippedToZero") : "");
+        previewRow.style.color = clipped ? "var(--error-color, #db4437)" : "";
         previewRow.hidden = false;
       } else {
         previewRow.hidden = true;
@@ -1474,11 +1480,15 @@ class StockroomPanel extends HTMLElement {
         async () => {
           const value = parseFloat(amount.value);
           if (!Number.isFinite(value) || (isStocktake ? value < 0 : value <= 0)) {
-            // SR-UX-02: 错误提示要可行动——说明错在哪，盘点态字段名是"实际数量"
-            this._toast(
-              isStocktake ? t("amountInvalidStocktake") : t("amountInvalid"),
-              true
-            );
+            // SR-UX-02/SR-IMP-04: NaN 与负数/非正是不同诊断
+            if (!Number.isFinite(value)) {
+              this._toast(t("amountInvalid"), true);
+            } else {
+              this._toast(
+                isStocktake ? t("amountInvalidStocktake") : t("amountInvalid"),
+                true
+              );
+            }
             return false;
           }
           const data = { entry_id: wh.entry_id, item: item.id };

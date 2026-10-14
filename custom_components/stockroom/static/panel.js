@@ -59,11 +59,13 @@ const I18N = {
     note: "备注",
     amount: "数量",
     amountInvalid: "数量需为大于 0 的数字",
+    amountInvalidNaN: "请输入有效数字",
     amountInvalidStocktake: "实际数量不能为负数",
     currentStock: "当前库存",
     afterConsume: "消耗后剩余",
     clippedToZero: "（超出当前库存，将截断到 0）",
     thresholdBadge: "（阈值 {n} {u}）",
+    thresholdBadgeNoUnit: "（阈值 {n}）",
     actual: "实际数量",
     cancel: "取消",
     confirm: "确认",
@@ -176,11 +178,13 @@ const I18N = {
     note: "Note",
     amount: "Amount",
     amountInvalid: "Quantity must be a number greater than 0",
+    amountInvalidNaN: "Please enter a valid number",
     amountInvalidStocktake: "Actual quantity cannot be negative",
     currentStock: "Current stock",
     afterConsume: "After consume",
     clippedToZero: " (exceeds stock — will be clamped to 0)",
     thresholdBadge: " (threshold {n} {u})",
+    thresholdBadgeNoUnit: " (threshold {n})",
     actual: "Actual quantity",
     cancel: "Cancel",
     confirm: "OK",
@@ -781,10 +785,14 @@ class StockroomPanel extends HTMLElement {
         ? el("span", {
             class: "srp-low-badge",
             text: t("lowStockBadge") +
-              t("thresholdBadge", {
-                n: Number(item.low_threshold),
-                u: item.unit || "",
-              }),
+              (item.unit
+                ? t("thresholdBadge", {
+                    n: Number(item.low_threshold),
+                    u: item.unit,
+                  })
+                : t("thresholdBadgeNoUnit", {
+                    n: Number(item.low_threshold),
+                  })),
           })
         : null,
       el(
@@ -1482,7 +1490,7 @@ class StockroomPanel extends HTMLElement {
           if (!Number.isFinite(value) || (isStocktake ? value < 0 : value <= 0)) {
             // SR-UX-02/SR-IMP-04: NaN 与负数/非正是不同诊断
             if (!Number.isFinite(value)) {
-              this._toast(t("amountInvalid"), true);
+              this._toast(t("amountInvalidNaN"), true);
             } else {
               this._toast(
                 isStocktake ? t("amountInvalidStocktake") : t("amountInvalid"),

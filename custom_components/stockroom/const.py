@@ -38,10 +38,13 @@ CONF_SCAN_ENABLED = "scan_enabled"
 CONF_SCAN_ENGINE = "scan_engine"
 SCAN_ENGINE_LLM = "llm"
 SCAN_ENGINE_OCR = "ocr"
-SCAN_ENGINES = [SCAN_ENGINE_LLM, SCAN_ENGINE_OCR]
+SCAN_ENGINE_LOCAL = "local"
+SCAN_ENGINES = [SCAN_ENGINE_LLM, SCAN_ENGINE_OCR, SCAN_ENGINE_LOCAL]
 DEFAULT_SCAN_ENGINE = SCAN_ENGINE_LLM
 CONF_OCR_SECRET_ID = "scan_ocr_secret_id"
 CONF_OCR_SECRET_KEY = "scan_ocr_secret_key"
+# 本地引擎（自建 RapidOCR sidecar，独立端口；见 D:\project\plans\pending\计划-本地OCR接入-20261018.md）
+CONF_SCAN_LOCAL_URL = "scan_local_url"
 CONF_SCAN_BASE_URL = "scan_base_url"
 CONF_SCAN_API_KEY = "scan_api_key"
 CONF_SCAN_MODEL = "scan_model"
@@ -82,6 +85,12 @@ DEFAULT_SUMMARY_BY_CATEGORY = False
 # schema cap (entry refuses >1e9 with a clear error) and the _round_quantity
 # clamp (internal sums can only reach it with a logged warning).
 QUANTITY_MAX = 1e9
+
+# Filament full-spool weight cap (100 kg), single source shared by the service
+# schema (_FULL_WEIGHT), the services.yaml selector max and the scan parse
+# layer — the scan-confirm path bypasses the service schemas, so the parse
+# layer and the inventory engine must clamp to the same value (SR-F-101).
+FULL_WEIGHT_MAX = 100000
 
 # ----------------------------------------------------------------------
 # Item model

@@ -103,7 +103,7 @@ const I18N = {
     cascadeHint: "级联系数",
     cascade: "级联系数",
     addLevel: "加一级",
-    scanNotEnabled: "拍照扫描未启用：请到集成配置项的选项里开启「拍照扫描入库」并填写识别 API key（默认智谱 glm-4.5v，兼容任意 OpenAI 接口）。",
+    scanNotEnabled: "拍照扫描未启用：请到集成配置项的选项里开启「拍照扫描入库」并按所选识别引擎填写配置（视觉模型：API key/端点；在线 OCR：腾讯云 SecretId/Key；本地 OCR：服务地址）。",
     scanCamera: "拍照",
     scanUpload: "上传图片",
     scanRecognize: "识别",
@@ -222,7 +222,7 @@ const I18N = {
     cascadeHint: "cascade",
     cascade: "Cascade factor",
     addLevel: "Add level",
-    scanNotEnabled: "Photo scanning is not enabled: turn it on in the integration options and fill in the vision API key (Zhipu glm-4.5v by default; any OpenAI-compatible endpoint works).",
+    scanNotEnabled: "Photo scanning is not enabled: turn it on in the integration options and configure the selected engine (vision model: API key/endpoint; online OCR: Tencent Cloud SecretId/Key; local OCR: service URL).",
     scanCamera: "Camera",
     scanUpload: "Upload image",
     scanRecognize: "Recognize",
@@ -457,6 +457,19 @@ class StockroomPanel extends HTMLElement {
     this._history = await this._fetch(`${API_HISTORY}?${params.toString()}`);
   }
 
+  async _loadHistorySafe() {
+    // 历史加载失败必须响（SR-F-102）：吞掉会把「加载失败」伪装成「暂无记录」，
+    // 或把旧记录挂在新筛选条件下。失败清 _history，下次进入该页会重试。
+    try {
+      await this._loadHistory();
+      this._error = null;
+    } catch (err) {
+      this._error = String(err.message || err);
+      this._history = null;
+    }
+    this._render();
+  }
+
   async _svc(domain, service, data) {
     await this._hass.callService(domain, service, data);
   }
@@ -519,7 +532,7 @@ class StockroomPanel extends HTMLElement {
           class: `srp-tab${this._view === view ? " active" : ""}`,
           onclick: async () => {
             this._view = view;
-            if (view === "history" && !this._history) await this._loadHistory().catch(() => {});
+            if (view === "history" && !this._history) await this._loadHistorySafe();
             this._render();
           },
         },
@@ -1197,8 +1210,7 @@ class StockroomPanel extends HTMLElement {
       onchange: async (event) => {
         this._histFilter.warehouse = event.target.value;
         this._histFilter.group_id = "";
-        await this._loadHistory().catch(() => {});
-        this._render();
+        await this._loadHistorySafe();
       },
     });
     whSelect.append(el("option", { value: "", text: t("allWarehouses") }));
@@ -1216,8 +1228,7 @@ class StockroomPanel extends HTMLElement {
         class: "srp-chip",
         onchange: async (event) => {
           this._histFilter.group_id = event.target.value;
-          await this._loadHistory().catch(() => {});
-          this._render();
+          await this._loadHistorySafe();
         },
       });
       groupSelect.append(el("option", { value: "", text: t("allGroups") }));

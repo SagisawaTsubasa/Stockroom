@@ -36,6 +36,7 @@ from .const import (
     EXTRA_COLOR,
     EXTRA_FULL_WEIGHT_G,
     EXTRA_MATERIAL,
+    FULL_WEIGHT_MAX,
     ITEM_LAST_STOCKTAKE,
     ITEM_UPDATED_AT,
     QUANTITY_MAX,
@@ -330,6 +331,17 @@ class InventoryEngine:
             _LOGGER.warning("低库存线 %s 超过上限 %g，已钳到上限", threshold, QUANTITY_MAX)
             threshold = QUANTITY_MAX
 
+        extra_dict = dict(extra) if extra else {}
+        fw = extra_dict.get(EXTRA_FULL_WEIGHT_G)
+        if fw is not None and float(fw) > FULL_WEIGHT_MAX:
+            # Same belt and braces for the spool weight (SR-F-101): the
+            # service schema caps it at FULL_WEIGHT_MAX, scan-confirm
+            # bypasses the schemas.
+            _LOGGER.warning(
+                "整盘克重 %s 超过上限 %g，已钳到上限", fw, FULL_WEIGHT_MAX
+            )
+            extra_dict[EXTRA_FULL_WEIGHT_G] = FULL_WEIGHT_MAX
+
         item: dict[str, Any] = {
             "id": iid,
             "name": str(name).strip(),
@@ -337,7 +349,7 @@ class InventoryEngine:
             "quantity": quantity,
             "unit": (str(unit).strip() if unit else "") or DEFAULT_UNITS.get(category, "个"),
             "low_threshold": threshold,
-            "extra": dict(extra) if extra else {},
+            "extra": extra_dict,
             ITEM_LAST_STOCKTAKE: None,
         }
         if location:
@@ -454,7 +466,14 @@ class InventoryEngine:
             if value is None or float(value) <= 0:
                 extra.pop(EXTRA_FULL_WEIGHT_G, None)
             else:
-                extra[EXTRA_FULL_WEIGHT_G] = float(value)
+                value = float(value)
+                if value > FULL_WEIGHT_MAX:
+                    # Same belt and braces as add_item (SR-F-101).
+                    _LOGGER.warning(
+                        "整盘克重 %s 超过上限 %g，已钳到上限", value, FULL_WEIGHT_MAX
+                    )
+                    value = FULL_WEIGHT_MAX
+                extra[EXTRA_FULL_WEIGHT_G] = value
         self._after_mutation(item, "update")
         return item
 

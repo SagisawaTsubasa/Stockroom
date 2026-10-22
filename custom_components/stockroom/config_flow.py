@@ -41,6 +41,7 @@ from .const import (
     CONF_SCAN_DEVICE_ID,
     CONF_SCAN_ENABLED,
     CONF_SCAN_ENGINE,
+    CONF_SCAN_LOCAL_URL,
     CONF_SCAN_MODEL,
     CONF_SUMMARY_BY_CATEGORY,
     CONF_WAREHOUSE_NAME,
@@ -52,8 +53,6 @@ from .const import (
     DEFAULT_SUMMARY_BY_CATEGORY,
     DEFAULT_WAREHOUSE_NAME,
     DOMAIN,
-    SCAN_ENGINE_LLM,
-    SCAN_ENGINE_OCR,
     SCAN_ENGINES,
 )
 from .inventory import InventoryEngine
@@ -168,13 +167,11 @@ class StockroomOptionsFlow(OptionsFlow):
                     ),
                 ): SelectSelector(
                     SelectSelectorConfig(
-                        options=[
-                            {
-                                "value": SCAN_ENGINE_LLM,
-                                "label": "视觉模型（OpenAI 兼容端点，可指向本地 Ollama）",
-                            },
-                            {"value": SCAN_ENGINE_OCR, "label": "在线 OCR（腾讯云通用印刷体，免费额度）"},
-                        ]
+                        # 选项标签走 translations 的 selector 段（SR-F-088；
+                        # translation_key + 纯字符串 options 为 HA 官方形态，
+                        # 实证：core dev helpers/selector.py SelectSelectorConfig）
+                        options=SCAN_ENGINES,
+                        translation_key="scan_engine",
                     )
                 ),
                 vol.Optional(
@@ -187,6 +184,10 @@ class StockroomOptionsFlow(OptionsFlow):
                     CONF_OCR_SECRET_KEY,
                     description={"suggested_value": self._opt(entry, CONF_OCR_SECRET_KEY, "")},
                 ): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
+                vol.Optional(
+                    CONF_SCAN_LOCAL_URL,
+                    description={"suggested_value": self._opt(entry, CONF_SCAN_LOCAL_URL, "")},
+                ): TextSelector(),
                 vol.Optional(
                     CONF_SCAN_DEVICE_ID,
                     description={"suggested_value": self._opt(entry, CONF_SCAN_DEVICE_ID, "")},
@@ -277,6 +278,18 @@ class StockroomOptionsFlow(OptionsFlow):
             )
         return vol.Schema(schema)
 
+    @staticmethod
+    def _normalize_local_url(base_input: dict[str, Any]) -> str:
+        """strip + 无 scheme 自动补 http://（SR-F-092）。
+
+        表单示例不含协议前缀（hassfest 翻译禁 URL），用户照抄保存后直接喂
+        aiohttp 会报 "URL should be absolute" 原始异常——归一在落盘前做。
+        """
+        url = str(base_input.get(CONF_SCAN_LOCAL_URL) or "").strip()
+        if url and "://" not in url:
+            url = f"http://{url}"
+        return url
+
     def _finish(
         self, base_input: dict[str, Any], mapping: dict[str, str]
     ) -> ConfigFlowResult:
@@ -300,6 +313,7 @@ class StockroomOptionsFlow(OptionsFlow):
             CONF_OCR_SECRET_KEY: str(
                 base_input.get(CONF_OCR_SECRET_KEY) or ""
             ).strip(),
+            CONF_SCAN_LOCAL_URL: self._normalize_local_url(base_input),
             CONF_SCAN_DEVICE_ID: str(
                 base_input.get(CONF_SCAN_DEVICE_ID) or ""
             ),

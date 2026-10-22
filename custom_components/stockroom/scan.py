@@ -59,6 +59,7 @@ from .const import (
     CONF_SCAN_DEVICE_ID,
     CONF_SCAN_ENABLED,
     CONF_SCAN_ENGINE,
+    CONF_SCAN_LOCAL_URL,
     CONF_SCAN_MODEL,
     DEFAULT_SCAN_BASE_URL,
     DEFAULT_SCAN_ENGINE,
@@ -67,9 +68,11 @@ from .const import (
     EXTRA_COLOR,
     EXTRA_FULL_WEIGHT_G,
     EXTRA_MATERIAL,
+    FULL_WEIGHT_MAX,
     META_SCAN_PENDING,
     NOTIFICATION_ACTION_EVENT,
     QUANTITY_MAX,
+    SCAN_ENGINE_LOCAL,
     SCAN_ENGINE_OCR,
     SCAN_ENGINES,
     SCAN_MAX_IMAGE_BYTES,
@@ -260,7 +263,9 @@ def parse_suggestions(content: str) -> list[dict[str, Any]]:
             extra["material"] = str(element["material"]).strip()
         if element.get("color"):
             extra["color"] = str(element["color"]).strip()
-        if 0 < full_weight_g <= QUANTITY_MAX:
+        # full_weight_g has its own tighter cap (service-schema parity,
+        # SR-F-101): the scan-confirm path bypasses the service schemas.
+        if 0 < full_weight_g <= FULL_WEIGHT_MAX:
             extra["full_weight_g"] = full_weight_g
         if extra:
             suggestion["extra"] = extra
@@ -386,7 +391,7 @@ def parse_ocr_text(lines: list[str]) -> list[dict[str, Any]]:
     if weight_match:
         value = float(weight_match.group(1))
         full_weight_g = value * 1000 if weight_match.group(2).lower() == "kg" else value
-        full_weight_g = min(full_weight_g, QUANTITY_MAX)
+        full_weight_g = min(full_weight_g, FULL_WEIGHT_MAX)
     color_word = next(
         (key for line in cleaned for key in _OCR_COLOR_WORDS if key in line),
         None,
@@ -440,8 +445,25 @@ async def _recognize_ocr(
         headers=headers,
         timeout=ClientTimeout(total=SCAN_TIMEOUT_SECONDS),
     ) as resp:
-        resp.raise_for_status()
-        data = await resp.json()
+        # 先读 body 再判状态（SR-F-095，同 SR-F-084 形状）：HTTP 错误体里的
+        # Response.Error.Message 直达用户，而不是只剩一个状态码。
+        raw = await resp.text()
+        try:
+            data = json.loads(raw) if raw else None
+        except ValueError:
+            data = None
+        if resp.status >= 400:
+            detail = ""
+            if isinstance(data, dict):
+                error = (data.get("Response") or {}).get("Error") or {}
+                detail = str(
+                    error.get("Message") or error.get("Code") or data.get("message") or ""
+                )
+            _LOGGER.warning("腾讯 OCR 返回 HTTP %s：%s", resp.status, detail)
+            raise ValueError(
+                f"腾讯 OCR 服务返回 {resp.status}：{detail or manager.service_error_hint()}"
+            )
+        data = data if isinstance(data, dict) else {}
     response = data.get("Response") or {}
     error = response.get("Error")
     if error:
@@ -463,6 +485,64 @@ async def _recognize_ocr(
     return suggestions
 
 
+async def _recognize_local(
+    manager: ScanManager, image: bytes
+) -> list[dict[str, Any]]:
+    """Recognize via the self-hosted RapidOCR sidecar (本地引擎).
+
+    Contract with the Mac-side service (D:/project/plans/pending/计划-本地OCR接入-20261018.md): POST
+    the raw image bytes, reply is ``{"ok": true, "lines": [...]}`` in
+    reading order; HTTP error replies carry the same body with ``ok:false``.
+    Recognition failures must surface — never fall through as an "empty
+    photo".
+    """
+    url = str(manager._opt(CONF_SCAN_LOCAL_URL) or "").strip()
+    if not url:
+        raise ValueError("未配置本地 OCR 服务地址 scan_local_url（请在集成选项里填写）")
+    session = async_get_clientsession(manager.hass)
+    async with session.post(
+        url,
+        data=image,
+        headers={"Content-Type": "application/octet-stream"},
+        timeout=ClientTimeout(total=SCAN_TIMEOUT_SECONDS),
+    ) as resp:
+        # 先读 body 再判状态（SR-F-084）：sidecar 的 4xx/5xx 也带结构化错误体
+        # （{"ok":false,"message":...}），先 raise_for_status 会把它丢掉、把
+        # 推理失败误诊为地址错误；200 + 非 JSON（反代错误页）也在这里归一成
+        # 明确失败而非 ContentTypeError。
+        raw = await resp.text()
+        try:
+            data = json.loads(raw) if raw else None
+        except ValueError:
+            data = None
+        if resp.status >= 400:
+            detail = ""
+            if isinstance(data, dict):
+                detail = str(data.get("message") or data.get("error") or "")
+            _LOGGER.warning("本地 OCR 服务返回 %s：%s", resp.status, detail)
+            raise ValueError(
+                f"本地 OCR 服务返回 {resp.status}：{detail or '请检查服务地址与端口'}"
+            )
+    if not isinstance(data, dict) or data.get("ok") is not True:
+        message = (
+            str(data.get("message") or data.get("error") or "未知错误")
+            if isinstance(data, dict)
+            else "回复不是 JSON 对象"
+        )
+        _LOGGER.warning("本地 OCR 返回失败：%s", message)
+        raise ValueError(f"本地 OCR 失败：{message}")
+    raw_lines = data.get("lines")
+    if not isinstance(raw_lines, list) or not all(
+        isinstance(line, str) for line in raw_lines
+    ):
+        # 非字符串数组会被逐字符/逐键迭代成垃圾建议静默入库（SR-F-086）
+        raise ValueError("本地 OCR 返回的 lines 必须是字符串数组")
+    suggestions = parse_ocr_text(raw_lines)
+    if not suggestions:
+        raise ValueError("OCR 未识别到有效文字")
+    return suggestions
+
+
 class ScanManager:
     """Per-entry scan pipeline: webhook → vision LLM → pending queue → notify."""
 
@@ -479,6 +559,8 @@ class ScanManager:
         self.engine = engine
         self.store = store
         self.webhook_id = webhook_id_for_entry(entry.entry_id)
+        self._webhook_url_cache: str | None = None
+        self._webhook_url_warned = False
         self._listeners: list[Any] = []
 
     # ------------------------------------------------------------------
@@ -488,19 +570,43 @@ class ScanManager:
     def _opt(self, key: str, default: Any = None) -> Any:
         return self.entry.options.get(key, self.entry.data.get(key, default))
 
+    def _engine_name(self) -> str:
+        """Normalized scan engine id; unknown values fall back to default."""
+        engine = str(self._opt(CONF_SCAN_ENGINE) or DEFAULT_SCAN_ENGINE)
+        return engine if engine in SCAN_ENGINES else DEFAULT_SCAN_ENGINE
+
     def _missing_credential_error(self) -> str | None:
         """Engine-aware credential check; None = ready to recognize.
 
         OCR-only setups (engine=ocr + Tencent keys, no LLM key) were locked
-        out by the engine-blind vision-api-key check (SR-F-070).
+        out by the engine-blind vision-api-key check (SR-F-070). The local
+        engine needs no credentials, only the sidecar URL.
         """
-        if str(self._opt(CONF_SCAN_ENGINE) or DEFAULT_SCAN_ENGINE) == SCAN_ENGINE_OCR:
+        engine = self._engine_name()
+        if engine == SCAN_ENGINE_OCR:
             if not self._opt(CONF_OCR_SECRET_ID) or not self._opt(CONF_OCR_SECRET_KEY):
                 return "未配置腾讯云 OCR 的 SecretId/SecretKey（请在集成选项里填写）"
+            return None
+        if engine == SCAN_ENGINE_LOCAL:
+            if not str(self._opt(CONF_SCAN_LOCAL_URL) or "").strip():
+                return "未配置本地 OCR 服务地址 scan_local_url（请在集成选项里填写）"
             return None
         if not self._opt(CONF_SCAN_API_KEY):
             return "未配置识别 API key（请在集成选项里填写）"
         return None
+
+    def service_error_hint(self) -> str:
+        """Engine-aware hint for HTTP-level recognition errors.
+
+        Single source shared by the webhook and the panel ScanView so the
+        two entries can't drift apart (SR-F-085).
+        """
+        engine = self._engine_name()
+        if engine == SCAN_ENGINE_LOCAL:
+            return "请检查本地 OCR 服务地址与端口"
+        if engine == SCAN_ENGINE_OCR:
+            return "请检查 SecretId/SecretKey、免费额度与网络"
+        return "请检查 API key、配额或模型名"
 
     @property
     def webhook_url(self) -> str:
@@ -511,18 +617,30 @@ class ScanManager:
         shortcut at an endpoint that silently returns an empty 200. On
         SSL-only instances with no internal URL configured there is no LAN
         address at all — return an empty string instead of failing setup.
+        Resolved once and cached: the panel polls this attribute every 5 s
+        (and sensor attributes re-read it), so an uncached miss would log a
+        WARNING on every poll (SR-F-096's noise amplification). Only the
+        SUCCESS result is cached — a failure (SSL-only, no internal_url)
+        warns once and re-resolves on later reads so that configuring
+        internal_url recovers without an integration reload (SR-F-100).
         """
+        if self._webhook_url_cache:
+            return self._webhook_url_cache
         try:
-            return async_generate_url(
-                self.hass, self.webhook_id, allow_external=False, prefer_external=False
+            self._webhook_url_cache = async_generate_url(
+                self.hass, self.webhook_id,
+                allow_external=False, prefer_external=False,
             )
         except NoURLAvailableError:
-            _LOGGER.warning(
-                "[%s] 找不到可用的内网地址（use_ssl 且未配 internal_url？），"
-                "webhook 地址暂不可展示；拍照扫描功能本身不受影响",
-                self.engine.warehouse_name,
-            )
+            if not self._webhook_url_warned:
+                _LOGGER.warning(
+                    "[%s] 找不到可用的内网地址（use_ssl 且未配 internal_url？），"
+                    "webhook 地址暂不可展示；拍照扫描功能本身不受影响",
+                    self.engine.warehouse_name,
+                )
+                self._webhook_url_warned = True
             return ""
+        return self._webhook_url_cache
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -588,12 +706,13 @@ class ScanManager:
             _LOGGER.warning("[%s] 识别请求超时", self.engine.warehouse_name)
             return web.json_response({"ok": False, "error": "识别超时"})
         except ClientResponseError as err:
+            hint = self.service_error_hint()
             _LOGGER.warning(
-                "[%s] 识别服务返回 %s（检查 API key、配额与模型名）",
-                self.engine.warehouse_name, err.status,
+                "[%s] 识别服务返回 %s（%s）",
+                self.engine.warehouse_name, err.status, hint,
             )
             return web.json_response(
-                {"ok": False, "error": f"识别服务返回 {err.status}：请检查 API key、配额或模型名"}
+                {"ok": False, "error": f"识别服务返回 {err.status}：{hint}"}
             )
         except (ClientError, OSError) as err:
             _LOGGER.warning("[%s] 识别服务连接失败：%s", self.engine.warehouse_name, err)
@@ -621,11 +740,11 @@ class ScanManager:
         Raises ValueError when the reply cannot be turned into suggestions;
         the webhook handler answers ok:false in that case.
         """
-        engine = str(self._opt(CONF_SCAN_ENGINE) or DEFAULT_SCAN_ENGINE)
-        if engine not in SCAN_ENGINES:
-            engine = DEFAULT_SCAN_ENGINE
+        engine = self._engine_name()
         if engine == SCAN_ENGINE_OCR:
             return await _recognize_ocr(self, image)
+        if engine == SCAN_ENGINE_LOCAL:
+            return await _recognize_local(self, image)
         return await self._recognize_llm(image)
 
     async def _recognize_llm(self, image: bytes) -> list[dict[str, Any]]:
@@ -661,8 +780,31 @@ class ScanManager:
             headers=headers,
             timeout=ClientTimeout(total=SCAN_TIMEOUT_SECONDS),
         ) as resp:
-            resp.raise_for_status()
-            data = await resp.json()
+            # 先读 body 再判状态（SR-F-095）：OpenAI 兼容端点的 4xx 错误体
+            # （{"error":{"message":...}}）直达用户，而不是只剩状态码。
+            raw = await resp.text()
+            try:
+                data = json.loads(raw) if raw else None
+            except ValueError:
+                data = None
+            if resp.status >= 400:
+                detail = ""
+                if isinstance(data, dict):
+                    error = data.get("error")
+                    if isinstance(error, dict):
+                        detail = str(error.get("message") or error.get("code") or "")
+                    elif error is not None:
+                        detail = str(error)
+                    else:
+                        detail = str(data.get("message") or "")
+                _LOGGER.warning(
+                    "[%s] 视觉模型服务返回 HTTP %s：%s",
+                    self.engine.warehouse_name, resp.status, detail,
+                )
+                raise ValueError(
+                    f"识别服务返回 {resp.status}：{detail or self.service_error_hint()}"
+                )
+            data = data if isinstance(data, dict) else {}
         content = data["choices"][0]["message"]["content"]
         return parse_suggestions(content)
 

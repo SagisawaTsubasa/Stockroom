@@ -493,8 +493,13 @@ class ScanView(HomeAssistantView):
             _LOGGER.warning("[%s] 识别请求超时", engine.warehouse_name)
             return self.json({"ok": False, "error": "识别超时"})
         except ClientResponseError as err:
+            # Engine-aware hint shared with the webhook (SR-F-085) — the
+            # panel must not send local-engine users hunting for an API key.
             return self.json(
-                {"ok": False, "error": f"识别服务返回 {err.status}：请检查 API key、配额或模型名"}
+                {
+                    "ok": False,
+                    "error": f"识别服务返回 {err.status}：{scan.service_error_hint()}",
+                }
             )
         except (ClientError, OSError) as err:
             _LOGGER.warning("[%s] 识别服务连接失败：%s", engine.warehouse_name, err)
@@ -662,7 +667,7 @@ def _validate_groups(hass: HomeAssistant, engine: Any, raw: Any) -> list[dict[st
                 )
             return value
 
-        for position, raw_slot in enumerate(raw_levels):
+        for raw_slot in raw_levels:
             if not isinstance(raw_slot, dict):
                 raise _WebError(400, f"槽位组「{name}」的槽位必须是对象")
             try:
@@ -721,10 +726,14 @@ def _validate_groups(hass: HomeAssistant, engine: Any, raw: Any) -> list[dict[st
                 "rated_usage": rated_usage,
                 "warn_threshold": warn_threshold,
             }
-            if position > 0 and cascade_factor is not None:
+            if cascade_factor is not None:
                 level_data["cascade_factor"] = cascade_factor
             levels.append(level_data)
         levels.sort(key=lambda slot: slot["level"])
+        if levels:
+            # 级联只对第 2 级起生效：排序后剥首位因子。按输入位置判断会在
+            # 乱序提交时静默丢错因子（SR-F-094）。
+            levels[0].pop("cascade_factor", None)
 
         group_data: dict[str, Any] = {
             "group_id": group_id,

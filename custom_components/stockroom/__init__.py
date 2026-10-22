@@ -25,6 +25,7 @@ from .const import (
     EXTRA_FULL_WEIGHT_G,
     EXTRA_MATERIAL,
     FLUSH_INTERVAL,
+    FULL_WEIGHT_MAX,
     QUANTITY_MAX,
     SERVICE_ADD_ITEM,
     SERVICE_CONSUME,
@@ -62,8 +63,10 @@ PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR]
 _QUANTITY = vol.All(cv.positive_float, vol.Range(min=0.001, max=QUANTITY_MAX))
 _STOCK_NUMBER = vol.All(cv.positive_float, vol.Range(max=QUANTITY_MAX))
 # Filament full-spool weight has a tighter physical cap (100 kg), aligned
-# with the services.yaml selector max for the field.
-_FULL_WEIGHT = vol.All(cv.positive_float, vol.Range(max=100000))
+# with the services.yaml selector max for the field (single source in
+# const.FULL_WEIGHT_MAX — the internal scan-confirm path bypasses this
+# schema, SR-F-101).
+_FULL_WEIGHT = vol.All(cv.positive_float, vol.Range(max=FULL_WEIGHT_MAX))
 
 ADD_ITEM_SCHEMA = vol.Schema(
     {

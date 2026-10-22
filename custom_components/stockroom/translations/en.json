@@ -32,7 +32,8 @@
           "bambu_tray_entities": "Bambu Lab tray sensors",
           "scan_engine": "Recognition engine",
           "scan_ocr_secret_id": "Tencent Cloud OCR SecretId",
-          "scan_ocr_secret_key": "Tencent Cloud OCR SecretKey"
+          "scan_ocr_secret_key": "Tencent Cloud OCR SecretKey",
+          "scan_local_url": "Local OCR service URL"
         },
         "data_description": {
           "default_low_threshold": "Used when the add_item service does not specify low_threshold.",
@@ -43,9 +44,10 @@
           "scan_api_key": "API key of the vision service (stored in the entry options).",
           "scan_model": "Vision model name, e.g. glm-4.5v",
           "bambu_tray_entities": "Select the Bambu Lab AMS tray sensors that should be deducted automatically after each finished print. AMS HT and the external spool are not supported in V1. Leave empty to disable.",
-          "scan_engine": "Vision model (OpenAI-compatible endpoint; can point at a local Ollama) or online OCR (Tencent Cloud GeneralBasicOCR, ~1000 free calls/month).",
+          "scan_engine": "Vision model (OpenAI-compatible endpoint; can point at a local Ollama), online OCR (Tencent Cloud GeneralBasicOCR, ~1000 free calls/month) or a self-hosted local OCR (RapidOCR service, works offline).",
           "scan_ocr_secret_id": "Only used by the online OCR engine.",
-          "scan_ocr_secret_key": "Only used by the online OCR engine."
+          "scan_ocr_secret_key": "Only used by the online OCR engine.",
+          "scan_local_url": "Full endpoint of the self-hosted RapidOCR service (protocol prefix optional — it is added automatically on save), e.g. 192.168.1.10:9101/ocr — full example in README. Only used by the local engine."
         }
       },
       "ams_map": {
@@ -55,6 +57,15 @@
     },
     "error": {
       "unknown_item": "That item id does not exist in this warehouse yet — create it with the add_item service or pick one from the dropdown."
+    }
+  },
+  "selector": {
+    "scan_engine": {
+      "options": {
+        "llm": "Vision model (OpenAI-compatible endpoint; can point at a local Ollama)",
+        "ocr": "Online OCR (Tencent Cloud GeneralBasicOCR, free tier)",
+        "local": "Local OCR (self-hosted RapidOCR service, works offline)"
+      }
     }
   },
   "entity": {

@@ -32,7 +32,8 @@
           "bambu_tray_entities": "Bambu Lab 料盘实体",
           "scan_engine": "识别引擎",
           "scan_ocr_secret_id": "腾讯云 OCR SecretId",
-          "scan_ocr_secret_key": "腾讯云 OCR SecretKey"
+          "scan_ocr_secret_key": "腾讯云 OCR SecretKey",
+          "scan_local_url": "本地 OCR 服务地址"
         },
         "data_description": {
           "default_low_threshold": "add_item 服务未指定 low_threshold 时使用。",
@@ -43,9 +44,10 @@
           "scan_api_key": "视觉服务的 API Key（存在集成选项里，仅本地使用）。",
           "scan_model": "视觉模型名，如 glm-4.5v",
           "bambu_tray_entities": "选择需要自动扣料的拓竹 AMS 料盘实体；打印完成后按分盘克数自动扣减。AMS HT 与外挂盘暂不支持。留空则不启用。",
-          "scan_engine": "视觉模型（OpenAI 兼容端点，可指向本地 Ollama）或在线 OCR（腾讯云通用印刷体识别，免费额度约 1000 次/月）。",
+          "scan_engine": "视觉模型（OpenAI 兼容端点，可指向本地 Ollama）、在线 OCR（腾讯云通用印刷体识别，免费额度约 1000 次/月）或本地 OCR（自建 RapidOCR 服务，离线可用）。",
           "scan_ocr_secret_id": "仅在线 OCR 引擎使用。",
-          "scan_ocr_secret_key": "仅在线 OCR 引擎使用。"
+          "scan_ocr_secret_key": "仅在线 OCR 引擎使用。",
+          "scan_local_url": "自建 RapidOCR 服务的完整端点（协议前缀可省略，保存时自动补全），如 192.168.1.10:9101/ocr，完整示例见 README。仅本地引擎使用。"
         }
       },
       "ams_map": {
@@ -55,6 +57,15 @@
     },
     "error": {
       "unknown_item": "该条目 id 在本仓库中不存在——请先用 add_item 服务创建，或从下拉列表中选择。"
+    }
+  },
+  "selector": {
+    "scan_engine": {
+      "options": {
+        "llm": "视觉模型（OpenAI 兼容端点，可指向本地 Ollama）",
+        "ocr": "在线 OCR（腾讯云通用印刷体，免费额度）",
+        "local": "本地 OCR（自建 RapidOCR 服务，离线可用）"
+      }
     }
   },
   "entity": {

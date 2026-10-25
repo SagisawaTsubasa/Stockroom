@@ -306,6 +306,12 @@ class InventoryEngine:
         item_id: str | None = None,
     ) -> dict[str, Any]:
         """Create an item; raises StockroomItemError on id conflict."""
+        # 与 update_item 的空名拒绝同语义：空白名会 slugify 出哈希 id
+        # （ocr-ux-R2 #4）
+        if not str(name).strip():
+            raise StockroomItemError(
+                "条目名称不能为空（名称无法清除，请传新名称或不传该字段）"
+            )
         if category not in CATEGORIES:
             raise StockroomItemError(f"未知分类：{category}（可选：{', '.join(CATEGORIES)}）")
         try:
@@ -425,47 +431,53 @@ class InventoryEngine:
         """Patch an item's metadata; only provided keys change.
 
         Name/category/unit/location/low_threshold are top-level fields;
-        material/color/full_weight_g land in ``extra`` (None clears them).
-        Category changes do not retroactively rewrite the unit. Name cannot
-        be cleared (blank raises); a blank unit resets to the category
-        default (units are mandatory — a silent "" would break displays).
+        material/color/full_weight_g and the print params land in ``extra``
+        (None/blank clears them). Category changes do not retroactively
+        rewrite the unit. Name cannot be cleared (blank raises); a blank
+        unit resets to the category default (units are mandatory — a silent
+        "" would break displays). Two-phase (ocr-ux-R2 #3): every field is
+        validated into a staging dict BEFORE anything is written — a
+        rejected update must not leave a partial write behind.
         """
         item = self.items[self.resolve_item_id(ref)]
+        changes: dict[str, Any] = {}
+        extra_changes: dict[str, Any] = {}
         if "name" in updates:
             new_name = str(updates["name"]).strip()
             if not new_name:
                 raise StockroomItemError(
                     "条目名称不能为空（名称无法清除，请传新名称或不传该字段）"
                 )
-            item["name"] = new_name
+            changes["name"] = new_name
         if "category" in updates and updates["category"] is not None:
             if updates["category"] not in CATEGORIES:
                 raise StockroomItemError(
                     f"未知分类：{updates['category']}（可选：{', '.join(CATEGORIES)}）"
                 )
-            item["category"] = updates["category"]
+            changes["category"] = updates["category"]
         if "unit" in updates and updates["unit"] is not None:
-            item["unit"] = (
-                str(updates["unit"]).strip() or DEFAULT_UNITS.get(item["category"], "个")
+            effective_category = changes.get("category", item["category"])
+            changes["unit"] = (
+                str(updates["unit"]).strip()
+                or DEFAULT_UNITS.get(effective_category, "个")
             )
         if "location" in updates:
             if updates["location"] is None or not str(updates["location"]).strip():
-                item.pop("location", None)
+                changes["location"] = None  # 清除哨兵
             else:
-                item["location"] = str(updates["location"]).strip()
+                changes["location"] = str(updates["location"]).strip()
         if "low_threshold" in updates and updates["low_threshold"] is not None:
-            item["low_threshold"] = max(0.0, float(updates["low_threshold"]))
-        extra = item.setdefault("extra", {})
+            changes["low_threshold"] = max(0.0, float(updates["low_threshold"]))
         for key in (EXTRA_MATERIAL, EXTRA_COLOR):
             if key in updates:
                 if updates[key] is None or not str(updates[key]).strip():
-                    extra.pop(key, None)
+                    extra_changes[key] = None
                 else:
-                    extra[key] = str(updates[key]).strip()
+                    extra_changes[key] = str(updates[key]).strip()
         if EXTRA_FULL_WEIGHT_G in updates:
             value = updates[EXTRA_FULL_WEIGHT_G]
             if value is None or float(value) <= 0:
-                extra.pop(EXTRA_FULL_WEIGHT_G, None)
+                extra_changes[EXTRA_FULL_WEIGHT_G] = None
             else:
                 value = float(value)
                 if value > FULL_WEIGHT_MAX:
@@ -474,7 +486,7 @@ class InventoryEngine:
                         "整盘克重 %s 超过上限 %g，已钳到上限", value, FULL_WEIGHT_MAX
                     )
                     value = FULL_WEIGHT_MAX
-                extra[EXTRA_FULL_WEIGHT_G] = value
+                extra_changes[EXTRA_FULL_WEIGHT_G] = value
         # 打印参数（七键，PRINT_PARAM_RANGES 单一来源）：null/空串清除；
         # 范围/有限值在引擎层兜底（内部路径绕过服务 schema，与 low_threshold/
         # full_weight 的引擎闸同惯例，ocr-ux-R1 #6）
@@ -483,7 +495,7 @@ class InventoryEngine:
                 continue
             value = updates[key]
             if value is None or (isinstance(value, str) and not value.strip()):
-                extra.pop(key, None)
+                extra_changes[key] = None
                 continue
             try:
                 number = float(value)
@@ -493,7 +505,19 @@ class InventoryEngine:
                 raise StockroomItemError(
                     f"打印参数 {key} 超出范围 [{low:g}, {high:g}]：{number}"
                 )
-            extra[key] = number
+            extra_changes[key] = number
+        # —— 校验全部完成，一次性提交 ——
+        for key, value in changes.items():
+            if key == "location" and value is None:
+                item.pop("location", None)
+            else:
+                item[key] = value
+        extra = item.setdefault("extra", {})
+        for key, value in extra_changes.items():
+            if value is None:
+                extra.pop(key, None)
+            else:
+                extra[key] = value
         self._after_mutation(item, "update")
         return item
 

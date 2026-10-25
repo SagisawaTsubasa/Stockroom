@@ -299,15 +299,27 @@ _OCR_COLOR_WORDS = {
 _OCR_WEIGHT_RE = re.compile(
     r"(\d+(?:\.\d+)?)\s*(kg|g)\b(?!\s*[/\uFF0F])", re.IGNORECASE
 )
-# 兼容/适用说明行（如「适用于 PLA/PETG/ABS」）只列材质名，不作分组锚——
-# 否则整卷会被兼容行劫持材质、甚至拆出重复建议（ocr-ux-R1 #4）
-_OCR_COMPAT_RE = re.compile(r"适用|兼容|支持|适配")
+# 兼容清单行的「适用(于)/兼容/支持/适配」开头特征——仅此形态（或一行列多个
+# 材质词）才不作分组锚；营销语「PLA 支持高速打印」仍是合法锚（ocr-ux-R2 #2）
+_OCR_COMPAT_RE = re.compile(r"^\s*(适用|兼容|支持|适配)")
 
 
 def _material_pattern(material: str) -> str:
     """ASCII-boundary pattern：中文相邻可命中（Python \\b 把 CJK 当词字符，
     「白色PLA」无边框会静默退回单条，ocr-ux-R1 #5），PLA2/PA12 仍被挡。"""
     return rf"(?<![A-Za-z0-9]){re.escape(material)}(?![A-Za-z0-9])"
+
+
+def _is_compat_listing(line: str) -> bool:
+    """兼容清单行判定：兼容关键词开头，或一行列出 ≥2 个不同材质词。"""
+    if _OCR_COMPAT_RE.search(line):
+        return True
+    words = {
+        m
+        for m in _OCR_MATERIALS
+        if re.search(_material_pattern(m), line, re.IGNORECASE)
+    }
+    return len(words) >= 2
 
 
 def _tc3_canonical_request(host: str, action: str, hashed_payload: str) -> str:
@@ -459,7 +471,7 @@ def parse_ocr_text(lines: list[str]) -> list[dict[str, Any]]:
     anchors = [
         (i, m)
         for i, line in enumerate(cleaned)
-        if (m := _ocr_material_word(line)) and not _OCR_COMPAT_RE.search(line)
+        if (m := _ocr_material_word(line)) and not _is_compat_listing(line)
     ]
     if not anchors:
         return [_ocr_suggestion(cleaned)]
@@ -470,13 +482,28 @@ def parse_ocr_text(lines: list[str]) -> list[dict[str, Any]]:
     ]
     groups = [segments[0]]
     hints = [anchors[0][1]]
+    prev_has_weight = _OCR_WEIGHT_RE.search(" ".join(groups[0])) is not None
     for i, segment in enumerate(segments[1:], 1):
-        if _OCR_WEIGHT_RE.search(" ".join(segment)):
+        seg_has_weight = _OCR_WEIGHT_RE.search(" ".join(segment)) is not None
+        anchor_line = cleaned[anchors[i][0]]
+        anchor_self_weight = (
+            _OCR_WEIGHT_RE.search(anchor_line) is not None
+            or "净重" in anchor_line
+            or "重量" in anchor_line
+        )
+        # 开新项要求锚段有独立克重；但「复述行在净重行之前」的同材质卷
+        # （锚行本身无克重、前组尚无克重）仍是同一卷的属性续行（ocr-ux-R2 #1）
+        starts_new = seg_has_weight and not (
+            anchors[i][1] == hints[-1]
+            and not prev_has_weight
+            and not anchor_self_weight
+        )
+        if starts_new:
             groups.append(segment)
             hints.append(anchors[i][1])
         else:
-            # 无独立克重的锚段是上一卷的属性续行：并入并沿用其锚材质
             groups[-1].extend(segment)
+        prev_has_weight = prev_has_weight or seg_has_weight
     return [_ocr_suggestion(group, hint) for group, hint in zip(groups, hints)]
 
 

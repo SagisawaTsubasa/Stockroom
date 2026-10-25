@@ -195,21 +195,18 @@ def _collect_update_fields(data: dict) -> dict:
 
 
 def _scan_overrides(call: ServiceCall) -> dict:
-    """Pick the suggestion-overriding fields out of a scan_confirm call."""
+    """Pick the suggestion-overriding fields out of a scan_confirm call.
+
+    Derived from SCAN_CONFIRM_SCHEMA's keys (minus the routing keys) so the
+    set cannot drift from the schema (ocr-ux-R2 #6 — same shape as the
+    update_item whitelist fix).
+    """
+    routing = {"entry_id", "suggestion"}
+    override_keys = [
+        key.schema for key in SCAN_CONFIRM_SCHEMA.schema if key.schema not in routing
+    ]
     return {
-        key: call.data[key]
-        for key in (
-            "name",
-            "quantity",
-            "category",
-            "unit",
-            "low_threshold",
-            "location",
-            EXTRA_MATERIAL,
-            EXTRA_COLOR,
-            EXTRA_FULL_WEIGHT_G,
-        )
-        if call.data.get(key) is not None
+        key: call.data[key] for key in override_keys if call.data.get(key) is not None
     }
 
 

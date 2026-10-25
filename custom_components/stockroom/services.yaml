@@ -233,7 +233,7 @@ set_threshold:
 
 update_item:
   name: 编辑条目
-  description: 修改条目元数据；只改变传入的字段。location/material/color 传空字符串清除；name 不可清除（空字符串报错）；unit 传空字符串恢复分类默认单位；low_threshold/full_weight_g 不受空字符串影响；七个打印参数（print_temp 等）传 null 或空串清除。
+  description: 修改条目元数据；只改变传入的字段（省略=保持现值）。location/material/color 传空字符串清除；name 不可清除（空字符串报错）；unit 传空字符串恢复分类默认单位；数值字段（low_threshold/full_weight_g/打印参数）不接受空字符串（用 0/null/省略）；七个打印参数传 null 或空串清除。
   fields:
     entry_id:
       name: 配置项 ID
@@ -302,7 +302,7 @@ update_item:
         text:
     full_weight_g:
       name: 满卷净重（g）
-      description: 可选；仅耗材，0 或不填清除。
+      description: 可选；仅耗材，0 清除，不传则保持现值。
       required: false
       selector:
         number:

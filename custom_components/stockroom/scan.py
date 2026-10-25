@@ -299,6 +299,15 @@ _OCR_COLOR_WORDS = {
 _OCR_WEIGHT_RE = re.compile(
     r"(\d+(?:\.\d+)?)\s*(kg|g)\b(?!\s*[/\uFF0F])", re.IGNORECASE
 )
+# 兼容/适用说明行（如「适用于 PLA/PETG/ABS」）只列材质名，不作分组锚——
+# 否则整卷会被兼容行劫持材质、甚至拆出重复建议（ocr-ux-R1 #4）
+_OCR_COMPAT_RE = re.compile(r"适用|兼容|支持|适配")
+
+
+def _material_pattern(material: str) -> str:
+    """ASCII-boundary pattern：中文相邻可命中（Python \\b 把 CJK 当词字符，
+    「白色PLA」无边框会静默退回单条，ocr-ux-R1 #5），PLA2/PA12 仍被挡。"""
+    return rf"(?<![A-Za-z0-9]){re.escape(material)}(?![A-Za-z0-9])"
 
 
 def _tc3_canonical_request(host: str, action: str, hashed_payload: str) -> str:
@@ -370,25 +379,29 @@ def _tc3_headers(
 
 
 def _ocr_material_word(line: str) -> str | None:
-    """The material keyword in one line (\\b word-boundary), or None."""
+    """The material keyword in one line (ASCII-boundary), or None."""
     return next(
-        (m for m in _OCR_MATERIALS if re.search(rf"\b{re.escape(m)}\b", line, re.IGNORECASE)),
+        (m for m in _OCR_MATERIALS if re.search(_material_pattern(m), line, re.IGNORECASE)),
         None,
     )
 
 
-def _ocr_suggestion(cleaned: list[str]) -> dict[str, Any]:
+def _ocr_suggestion(
+    cleaned: list[str], material_hint: str | None = None
+) -> dict[str, Any]:
     """Build one suggestion from one group of lines (single-item rules).
 
-    Honest scope: material keywords, spool weight and Chinese color words
-    are extractable; anything requiring understanding of the label stays
-    empty for the user to fill at confirm time. Output matches
+    ``material_hint`` is the group's anchor material — compatibility lines
+    listing other materials must not override it (ocr-ux-R1 #4). Honest
+    scope: material keywords, spool weight and Chinese color words are
+    extractable; anything requiring understanding of the label stays empty
+    for the user to fill at confirm time. Output matches
     parse_suggestions' suggestion shape so the rest of the pipeline is
     engine-agnostic.
     """
     text_all = " ".join(cleaned)
-    material = next(
-        (m for m in _OCR_MATERIALS if re.search(rf"\b{re.escape(m)}\b", text_all, re.IGNORECASE)),
+    material = material_hint or next(
+        (m for m in _OCR_MATERIALS if re.search(_material_pattern(m), text_all, re.IGNORECASE)),
         None,
     )
     weight_match = _OCR_WEIGHT_RE.search(text_all)
@@ -401,12 +414,12 @@ def _ocr_suggestion(cleaned: list[str]) -> dict[str, Any]:
         (key for line in cleaned for key in _OCR_COLOR_WORDS if key in line),
         None,
     )
-    # 名称行与材质检测同口径（\b 词边界），避免子串误命中（SR-F-073）
+    # 名称行与材质同口径（锚材质优先），避免子串误命中（SR-F-073）
     name_line = next(
         (
             line
             for line in cleaned
-            if material and re.search(rf"\b{re.escape(material)}\b", line, re.IGNORECASE)
+            if material and re.search(_material_pattern(material), line, re.IGNORECASE)
         ),
         max(cleaned, key=len),
     )
@@ -443,21 +456,28 @@ def parse_ocr_text(lines: list[str]) -> list[dict[str, Any]]:
     cleaned = [line.strip() for line in lines if str(line).strip()]
     if not cleaned:
         return []
-    anchors = [i for i, line in enumerate(cleaned) if _ocr_material_word(line)]
+    anchors = [
+        (i, m)
+        for i, line in enumerate(cleaned)
+        if (m := _ocr_material_word(line)) and not _OCR_COMPAT_RE.search(line)
+    ]
     if not anchors:
         return [_ocr_suggestion(cleaned)]
-    bounds = anchors[1:] + [len(cleaned)]
+    bounds = [a for a, _m in anchors[1:]] + [len(cleaned)]
     segments = [
         cleaned[0 if i == 0 else anchor : bounds[i]]
-        for i, anchor in enumerate(anchors)
+        for i, (anchor, _m) in enumerate(anchors)
     ]
     groups = [segments[0]]
-    for segment in segments[1:]:
+    hints = [anchors[0][1]]
+    for i, segment in enumerate(segments[1:], 1):
         if _OCR_WEIGHT_RE.search(" ".join(segment)):
             groups.append(segment)
+            hints.append(anchors[i][1])
         else:
+            # 无独立克重的锚段是上一卷的属性续行：并入并沿用其锚材质
             groups[-1].extend(segment)
-    return [_ocr_suggestion(group) for group in groups]
+    return [_ocr_suggestion(group, hint) for group, hint in zip(groups, hints)]
 
 
 async def _recognize_ocr(
@@ -881,10 +901,29 @@ class ScanManager:
         fields = {key: value for key, value in suggestion.items() if key not in ("id", "created_at")}
         overrides = dict(overrides or {})
         extra = dict(fields.get("extra") or {})
-        for key in (EXTRA_MATERIAL, EXTRA_COLOR, EXTRA_FULL_WEIGHT_G):
+        # 可清空识别属性的空值语义与 update_item 一致（ocr-ux-R1 #3）：面板编辑
+        # 对话框总是发送 trim 后的值——空串/0 = 清除该属性，缺键 = 保持识别值。
+        for key in (EXTRA_MATERIAL, EXTRA_COLOR):
             if overrides.get(key) is not None:
-                extra[key] = overrides.pop(key)
+                value = str(overrides.pop(key)).strip()
+                if value:
+                    extra[key] = value
+                else:
+                    extra.pop(key, None)
+        if overrides.get(EXTRA_FULL_WEIGHT_G) is not None:
+            weight = overrides.pop(EXTRA_FULL_WEIGHT_G)
+            try:
+                weight_number = float(weight)
+            except (TypeError, ValueError):
+                weight_number = 0.0
+            if 0 < weight_number <= FULL_WEIGHT_MAX:
+                extra[EXTRA_FULL_WEIGHT_G] = weight_number
+            else:
+                extra.pop(EXTRA_FULL_WEIGHT_G, None)
         fields.update({key: value for key, value in overrides.items() if value is not None})
+        # 空名称覆盖没有意义（add_item 会 slugify 出哈希 id）——保留识别名
+        if not str(fields.get("name") or "").strip():
+            fields["name"] = suggestion.get("name") or fields["name"]
         if extra:
             fields["extra"] = extra
         else:

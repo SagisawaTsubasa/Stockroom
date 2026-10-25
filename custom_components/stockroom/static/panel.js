@@ -1464,7 +1464,12 @@ class StockroomPanel extends HTMLElement {
       qtyTouched = true;
     });
     fullWeight.addEventListener("input", () => {
-      if (!isEdit && !qtyTouched && category.value === "filament") {
+      if (
+        !isEdit &&
+        !qtyTouched &&
+        category.value === "filament" &&
+        (!unit.value.trim() || unit.value.trim().toLowerCase() === "g")
+      ) {
         stockQty.value = fullWeight.value;
       }
     });
@@ -1557,6 +1562,11 @@ class StockroomPanel extends HTMLElement {
   _openScanEditDialog(suggestion) {
     const wh = this._currentWarehouse();
     const extra = suggestion.extra || {};
+    // 整卷入库语义仅对「耗材且单位为克」生效：非耗材/非克单位预填满卷克重
+    // 会入库成错误的量（250 颗 / 1000 卷，ocr-ux-R1 #2）
+    const isFilamentG =
+      suggestion.category === "filament" &&
+      (!suggestion.unit || String(suggestion.unit).toLowerCase() === "g");
     const name = this._input(suggestion.name || "");
     const category = el("select");
     for (const [value, meta] of Object.entries(CATEGORY_META)) {
@@ -1564,22 +1574,42 @@ class StockroomPanel extends HTMLElement {
     }
     category.value = suggestion.category || "other";
     const unit = this._input(suggestion.unit || "");
-    // 整卷入库语义：识别出满卷净重时，当前库存默认按整卷预填（可改）
     const fullWeight = this._input(extra.full_weight_g || "", "number", "0.1");
     const quantity = this._input(
-      extra.full_weight_g || suggestion.quantity || "",
+      (isFilamentG ? extra.full_weight_g : "") || suggestion.quantity || "",
       "number",
       "0.01"
     );
     const location = this._input(suggestion.location || "");
     const material = this._input(extra.material || "");
     const color = this._input(extra.color || "");
+    const materialFields = () =>
+      category.value === "filament"
+        ? [
+            this._field(t("material"), material),
+            this._field(t("color"), color),
+            this._field(t("fullWeight"), fullWeight),
+          ]
+        : [];
+    const materialWrap = el("div");
+    const refreshMaterial = () => {
+      materialWrap.innerHTML = "";
+      materialWrap.append(...materialFields());
+    };
+    category.addEventListener("change", refreshMaterial);
+    refreshMaterial();
     let qtyTouched = false;
     quantity.addEventListener("input", () => {
       qtyTouched = true;
     });
     fullWeight.addEventListener("input", () => {
-      if (!qtyTouched) quantity.value = fullWeight.value;
+      if (
+        !qtyTouched &&
+        category.value === "filament" &&
+        (!unit.value.trim() || unit.value.trim().toLowerCase() === "g")
+      ) {
+        quantity.value = fullWeight.value;
+      }
     });
     this._openDialog((dialog) => {
       this._dialogFrame(
@@ -1594,37 +1624,34 @@ class StockroomPanel extends HTMLElement {
             this._field(t("unit"), unit)
           ),
           this._field(t("currentStock"), quantity),
-          this._field(t("fullWeight"), fullWeight),
-          el(
-            "div",
-            { class: "srp-field-row" },
-            this._field(t("material"), material),
-            this._field(t("color"), color)
-          ),
+          materialWrap,
           this._field(t("location"), location),
         ],
         async () => {
-          const overrides = {};
-          if (name.value.trim()) overrides.name = name.value.trim();
-          if (category.value) overrides.category = category.value;
-          if (unit.value.trim()) overrides.unit = unit.value.trim();
-          const qty = parseFloat(quantity.value);
-          if (Number.isFinite(qty) && qty > 0) overrides.quantity = qty;
-          if (location.value.trim()) overrides.location = location.value.trim();
-          if (material.value.trim()) overrides.material = material.value.trim();
-          if (color.value.trim()) overrides.color = color.value.trim();
-          const fw = parseFloat(fullWeight.value);
-          if (Number.isFinite(fw) && fw > 0) overrides.full_weight_g = fw;
-          try {
-            await this._svc("stockroom", "scan_confirm", {
-              entry_id: wh.entry_id,
-              suggestion: suggestion.id,
-              ...overrides,
-            });
-            this._toast(t("saved"));
-          } catch (err) {
-            this._toast(String(err.message || err), true);
+          const itemName = name.value.trim();
+          if (!itemName) {
+            this._toast(t("name"), true);
+            return false;
           }
+          // 可清空字段一律发送 trim 后的值（含空串/0）：空=清除识别属性，
+          // 缺键=保持识别值（confirm 侧同语义，ocr-ux-R1 #3）。不 try/catch：
+          // 失败由 _dialogFrame toast 并保持对话框打开，编辑不丢。
+          const overrides = {
+            name: itemName,
+            category: category.value,
+            unit: unit.value.trim(),
+            quantity: parseFloat(quantity.value) || 0,
+            location: location.value.trim(),
+            material: material.value.trim(),
+            color: color.value.trim(),
+            full_weight_g: parseFloat(fullWeight.value) || 0,
+          };
+          await this._svc("stockroom", "scan_confirm", {
+            entry_id: wh.entry_id,
+            suggestion: suggestion.id,
+            ...overrides,
+          });
+          this._toast(t("saved"));
           this._scanImage = null;
           await this._refresh();
         }

@@ -133,10 +133,10 @@ UPDATE_ITEM_SCHEMA = vol.Schema(
         vol.Optional("material"): cv.string,
         vol.Optional("color"): cv.string,
         vol.Optional("full_weight_g"): _FULL_WEIGHT,
-        # 打印参数（None=清除该参数；数值范围单一来源 PRINT_PARAM_RANGES）
+        # 打印参数（None/空串=清除该参数；数值范围单一来源 PRINT_PARAM_RANGES）
         **{
             vol.Optional(key): vol.Any(
-                None, vol.All(vol.Coerce(float), vol.Range(min=low, max=high))
+                None, "", vol.All(vol.Coerce(float), vol.Range(min=low, max=high))
             )
             for key, (low, high) in PRINT_PARAM_RANGES.items()
         },
@@ -173,6 +173,25 @@ SCAN_DISMISS_SCHEMA = vol.Schema(
         vol.Required("suggestion"): cv.string,
     }
 )
+
+# update_item 可写字段全集（含打印参数七键，PRINT_PARAM_RANGES 单一来源）：
+# handler 收集白名单必须与 schema 同源，否则字段在服务入口被静默丢弃（ocr-ux-R1 #1）。
+_UPDATE_FIELD_KEYS = (
+    "name",
+    "category",
+    "unit",
+    "low_threshold",
+    "location",
+    EXTRA_MATERIAL,
+    EXTRA_COLOR,
+    EXTRA_FULL_WEIGHT_G,
+    *PRINT_PARAM_RANGES,
+)
+
+
+def _collect_update_fields(data: dict) -> dict:
+    """Pick the writable fields out of update_item service data."""
+    return {key: data[key] for key in _UPDATE_FIELD_KEYS if key in data}
 
 
 def _scan_overrides(call: ServiceCall) -> dict:
@@ -343,21 +362,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
     async def handle_update_item(call: ServiceCall) -> None:
         """Patch an item's metadata; provided keys change, blank clears."""
         engine = _async_get_engine(hass, call.data.get("entry_id"))
-        updates = {
-            key: call.data[key]
-            for key in (
-                "name",
-                "category",
-                "unit",
-                "low_threshold",
-                "location",
-                EXTRA_MATERIAL,
-                EXTRA_COLOR,
-                EXTRA_FULL_WEIGHT_G,
-            )
-            if key in call.data
-        }
-        engine.update_item(call.data["item"], updates)
+        engine.update_item(call.data["item"], _collect_update_fields(call.data))
         _schedule_flush(hass, engine)
 
     async def handle_log_filter_change(call: ServiceCall) -> None:

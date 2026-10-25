@@ -475,14 +475,25 @@ class InventoryEngine:
                     )
                     value = FULL_WEIGHT_MAX
                 extra[EXTRA_FULL_WEIGHT_G] = value
-        # 打印参数（七键，PRINT_PARAM_RANGES 单一来源）：null/空串清除，数值透传
-        for key in PRINT_PARAM_RANGES:
-            if key in updates:
-                value = updates[key]
-                if value is None or (isinstance(value, str) and not value.strip()):
-                    extra.pop(key, None)
-                else:
-                    extra[key] = float(value)
+        # 打印参数（七键，PRINT_PARAM_RANGES 单一来源）：null/空串清除；
+        # 范围/有限值在引擎层兜底（内部路径绕过服务 schema，与 low_threshold/
+        # full_weight 的引擎闸同惯例，ocr-ux-R1 #6）
+        for key, (low, high) in PRINT_PARAM_RANGES.items():
+            if key not in updates:
+                continue
+            value = updates[key]
+            if value is None or (isinstance(value, str) and not value.strip()):
+                extra.pop(key, None)
+                continue
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                raise StockroomItemError(f"打印参数 {key} 不是数字：{value!r}") from None
+            if not math.isfinite(number) or not low <= number <= high:
+                raise StockroomItemError(
+                    f"打印参数 {key} 超出范围 [{low:g}, {high:g}]：{number}"
+                )
+            extra[key] = number
         self._after_mutation(item, "update")
         return item
 

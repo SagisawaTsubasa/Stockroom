@@ -310,6 +310,76 @@ update_item:
           max: 100000
           step: 0.1
           mode: box
+    print_temp:
+      name: 打印温度（°C）
+      description: 可选；打印参数（存于条目 extra），传 null 清除。
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 500
+          step: 1
+          mode: box
+    pressure_advance:
+      name: 提前压力
+      description: 可选；打印参数，传 null 清除。
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 2
+          step: 0.001
+          mode: box
+    flow_ratio:
+      name: 流量补偿
+      description: 可选；打印参数，传 null 清除。
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 2
+          step: 0.001
+          mode: box
+    outer_wall_speed:
+      name: 外墙速度（mm/s）
+      description: 可选；打印参数，传 null 清除。
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 2000
+          step: 0.1
+          mode: box
+    shrinkage:
+      name: 收缩率（%）
+      description: 可选；打印参数，传 null 清除。
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 0.1
+          mode: box
+    hole_compensation:
+      name: 孔径补偿（mm）
+      description: 可选；打印参数，传 null 清除。
+      required: false
+      selector:
+        number:
+          min: -10
+          max: 10
+          step: 0.01
+          mode: box
+    max_volumetric_speed:
+      name: 最大体积流量（mm³/s）
+      description: 可选；打印参数，传 null 清除。
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 0.1
+          mode: box
 
 log_filter_change:
   name: 手动更换滤芯

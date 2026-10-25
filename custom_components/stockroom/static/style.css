@@ -662,3 +662,8 @@
 .srp-spool-swatch {
   border: 1px solid rgba(0, 0, 0, 0.25);
 }
+
+.srp-params-set {
+  color: var(--primary-color);
+  border-color: var(--primary-color);
+}

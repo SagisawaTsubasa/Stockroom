@@ -28,6 +28,27 @@ const POLL_MS = 5000;
 // Spool states that mean "nothing usable loaded" — no bind/create offered.
 const EMPTY_SPOOL_NAMES = new Set(["", "?", "empty", "unknown", "unavailable"]);
 
+// Filament print-parameter extra fields (order = dialog order; backend
+// single source: const.PRINT_PARAM_RANGES).
+const PRINT_PARAM_KEYS = [
+  "print_temp",
+  "pressure_advance",
+  "flow_ratio",
+  "outer_wall_speed",
+  "shrinkage",
+  "hole_compensation",
+  "max_volumetric_speed",
+];
+const PRINT_PARAM_LABELS = {
+  print_temp: "paramPrintTemp",
+  pressure_advance: "paramPressureAdvance",
+  flow_ratio: "paramFlowRatio",
+  outer_wall_speed: "paramOuterWallSpeed",
+  shrinkage: "paramShrinkage",
+  hole_compensation: "paramHoleCompensation",
+  max_volumetric_speed: "paramMaxVolSpeed",
+};
+
 const I18N = {
   "zh-Hans": {
     panelTitle: "仓管面板",
@@ -115,6 +136,17 @@ const I18N = {
     scanSuggestionMeta: "{q}{u} · {cat} · {loc}",
     scanConfirm: "入库",
     scanDismiss: "忽略",
+    scanEditTitle: "编辑识别建议",
+    fullWeightTag: "满卷 {n}g",
+    printParams: "打印参数",
+    printParamsTitle: "打印参数 — {name}",
+    paramPrintTemp: "打印温度 (°C)",
+    paramPressureAdvance: "提前压力",
+    paramFlowRatio: "流量补偿",
+    paramOuterWallSpeed: "外墙速度 (mm/s)",
+    paramShrinkage: "收缩率 (%)",
+    paramHoleCompensation: "孔径补偿 (mm)",
+    paramMaxVolSpeed: "最大体积流量 (mm³/s)",
     spoolTitle: "打印机料盘",
     spoolSync: "同步参数",
     spoolStaleOther: "参数已变（其他仓库）",
@@ -234,6 +266,17 @@ const I18N = {
     scanSuggestionMeta: "{q}{u} · {cat} · {loc}",
     scanConfirm: "Add",
     scanDismiss: "Dismiss",
+    scanEditTitle: "Edit suggestion",
+    fullWeightTag: "Full spool {n}g",
+    printParams: "Print params",
+    printParamsTitle: "Print params — {name}",
+    paramPrintTemp: "Print temp (°C)",
+    paramPressureAdvance: "Pressure advance",
+    paramFlowRatio: "Flow ratio",
+    paramOuterWallSpeed: "Outer wall speed (mm/s)",
+    paramShrinkage: "Shrinkage (%)",
+    paramHoleCompensation: "Hole compensation (mm)",
+    paramMaxVolSpeed: "Max volumetric speed (mm³/s)",
     spoolTitle: "Printer spools",
     spoolSync: "Sync params",
     spoolStaleOther: "stale (other warehouse)",
@@ -837,6 +880,21 @@ class StockroomPanel extends HTMLElement {
         actionBtn("mdi:clipboard-check-outline", "stocktake", () =>
           this._openQtyDialog("stocktake", item)
         ),
+        ...(item.category === "filament"
+          ? [
+              el(
+                "button",
+                {
+                  class:
+                    "srp-btn small" +
+                    (this._hasPrintParams(item) ? " srp-params-set" : ""),
+                  onclick: () => this._openParamsDialog(item),
+                },
+                el("ha-icon", { icon: "mdi:tune" }),
+                t("printParams")
+              ),
+            ]
+          : []),
         actionBtn("mdi:pencil", "edit", () => this._openItemDialog(item)),
         actionBtn("mdi:delete-outline", "remove", () => this._confirmRemoveItem(item))
       )
@@ -1142,12 +1200,13 @@ class StockroomPanel extends HTMLElement {
               el("span", { class: "srp-scan-name", text: suggestion.name }),
               el("span", {
                 class: "srp-hint",
-                text: t("scanSuggestionMeta", {
-                  q: fmtQty(suggestion.quantity || 0),
-                  u: suggestion.unit || "",
-                  cat: suggestion.category || "",
-                  loc: suggestion.location || "",
-                }),
+                text:
+                  t("scanSuggestionMeta", {
+                    q: fmtQty(suggestion.quantity || 0),
+                    u: suggestion.unit || "",
+                    cat: suggestion.category || "",
+                    loc: suggestion.location || "",
+                  }) + this._scanExtraText(suggestion),
               })
             ),
             el(
@@ -1172,6 +1231,14 @@ class StockroomPanel extends HTMLElement {
                   },
                 },
                 t("scanConfirm")
+              ),
+              el(
+                "button",
+                {
+                  class: "srp-btn small",
+                  onclick: () => this._openScanEditDialog(suggestion),
+                },
+                t("edit")
               ),
               el(
                 "button",
@@ -1374,6 +1441,8 @@ class StockroomPanel extends HTMLElement {
     const material = this._input(item?.extra?.material || "");
     const color = this._input(item?.extra?.color || "");
     const fullWeight = this._input(item?.extra?.full_weight_g || "", "number", "0.1");
+    // 整卷入库语义：新增时填了满卷净重，当前库存默认按整卷带出（手动改过以手改为准）
+    const stockQty = this._input("", "number", "0.01");
 
     const materialFields = () => (category.value === "filament"
       ? [
@@ -1390,6 +1459,16 @@ class StockroomPanel extends HTMLElement {
     category.addEventListener("change", refreshMaterial);
     refreshMaterial();
 
+    let qtyTouched = false;
+    stockQty.addEventListener("input", () => {
+      qtyTouched = true;
+    });
+    fullWeight.addEventListener("input", () => {
+      if (!isEdit && !qtyTouched && category.value === "filament") {
+        stockQty.value = fullWeight.value;
+      }
+    });
+
     this._openDialog((dialog) => {
       this._dialogFrame(
         dialog,
@@ -1404,6 +1483,7 @@ class StockroomPanel extends HTMLElement {
           ),
           this._field(t("lowThreshold"), threshold),
           this._field(t("location"), location),
+          ...(isEdit ? [] : [this._field(t("currentStock"), stockQty)]),
           materialWrap,
         ],
         async () => {
@@ -1440,6 +1520,8 @@ class StockroomPanel extends HTMLElement {
             if (unit.value.trim()) data.unit = unit.value.trim();
             if (threshold.value !== "") data.low_threshold = parseFloat(threshold.value) || 0;
             if (location.value.trim()) data.location = location.value.trim();
+            const stock = parseFloat(stockQty.value);
+            if (Number.isFinite(stock) && stock > 0) data.quantity = stock;
             if (category.value === "filament") {
               if (material.value.trim()) data.material = material.value.trim();
               if (color.value.trim()) data.color = color.value.trim();
@@ -1447,6 +1529,132 @@ class StockroomPanel extends HTMLElement {
             }
             await this._svc("stockroom", "add_item", data);
           }
+          this._toast(t("saved"));
+          await this._refresh();
+        }
+      );
+    });
+  }
+
+  _scanExtraText(suggestion) {
+    const x = suggestion.extra || {};
+    const parts = [];
+    if (x.material) parts.push(x.material);
+    if (x.color) parts.push(x.color);
+    if (Number(x.full_weight_g) > 0) {
+      parts.push(t("fullWeightTag", { n: fmtQty(x.full_weight_g) }));
+    }
+    return parts.length ? " · " + parts.join(" · ") : "";
+  }
+
+  _hasPrintParams(item) {
+    const extra = item.extra || {};
+    return PRINT_PARAM_KEYS.some(
+      (key) => extra[key] !== undefined && extra[key] !== null
+    );
+  }
+
+  _openScanEditDialog(suggestion) {
+    const wh = this._currentWarehouse();
+    const extra = suggestion.extra || {};
+    const name = this._input(suggestion.name || "");
+    const category = el("select");
+    for (const [value, meta] of Object.entries(CATEGORY_META)) {
+      category.append(el("option", { value, text: t(meta.catKey) }));
+    }
+    category.value = suggestion.category || "other";
+    const unit = this._input(suggestion.unit || "");
+    // 整卷入库语义：识别出满卷净重时，当前库存默认按整卷预填（可改）
+    const fullWeight = this._input(extra.full_weight_g || "", "number", "0.1");
+    const quantity = this._input(
+      extra.full_weight_g || suggestion.quantity || "",
+      "number",
+      "0.01"
+    );
+    const location = this._input(suggestion.location || "");
+    const material = this._input(extra.material || "");
+    const color = this._input(extra.color || "");
+    let qtyTouched = false;
+    quantity.addEventListener("input", () => {
+      qtyTouched = true;
+    });
+    fullWeight.addEventListener("input", () => {
+      if (!qtyTouched) quantity.value = fullWeight.value;
+    });
+    this._openDialog((dialog) => {
+      this._dialogFrame(
+        dialog,
+        t("scanEditTitle", { name: suggestion.name }),
+        [
+          this._field(t("name"), name),
+          el(
+            "div",
+            { class: "srp-field-row" },
+            this._field(t("category"), category),
+            this._field(t("unit"), unit)
+          ),
+          this._field(t("currentStock"), quantity),
+          this._field(t("fullWeight"), fullWeight),
+          el(
+            "div",
+            { class: "srp-field-row" },
+            this._field(t("material"), material),
+            this._field(t("color"), color)
+          ),
+          this._field(t("location"), location),
+        ],
+        async () => {
+          const overrides = {};
+          if (name.value.trim()) overrides.name = name.value.trim();
+          if (category.value) overrides.category = category.value;
+          if (unit.value.trim()) overrides.unit = unit.value.trim();
+          const qty = parseFloat(quantity.value);
+          if (Number.isFinite(qty) && qty > 0) overrides.quantity = qty;
+          if (location.value.trim()) overrides.location = location.value.trim();
+          if (material.value.trim()) overrides.material = material.value.trim();
+          if (color.value.trim()) overrides.color = color.value.trim();
+          const fw = parseFloat(fullWeight.value);
+          if (Number.isFinite(fw) && fw > 0) overrides.full_weight_g = fw;
+          try {
+            await this._svc("stockroom", "scan_confirm", {
+              entry_id: wh.entry_id,
+              suggestion: suggestion.id,
+              ...overrides,
+            });
+            this._toast(t("saved"));
+          } catch (err) {
+            this._toast(String(err.message || err), true);
+          }
+          this._scanImage = null;
+          await this._refresh();
+        }
+      );
+    });
+  }
+
+  _openParamsDialog(item) {
+    const wh = this._currentWarehouse();
+    const extra = item.extra || {};
+    const inputs = Object.fromEntries(
+      PRINT_PARAM_KEYS.map((key) => [
+        key,
+        this._input(extra[key] ?? "", "number", "0.01"),
+      ])
+    );
+    this._openDialog((dialog) => {
+      this._dialogFrame(
+        dialog,
+        t("printParamsTitle", { name: item.name }),
+        PRINT_PARAM_KEYS.map((key) =>
+          this._field(t(PRINT_PARAM_LABELS[key]), inputs[key])
+        ),
+        async () => {
+          const updates = { entry_id: wh.entry_id, item: item.id };
+          for (const key of PRINT_PARAM_KEYS) {
+            const v = inputs[key].value.trim();
+            updates[key] = v === "" ? null : parseFloat(v);
+          }
+          await this._svc("stockroom", "update_item", updates);
           this._toast(t("saved"));
           await this._refresh();
         }

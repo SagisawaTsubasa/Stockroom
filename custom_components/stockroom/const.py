@@ -92,6 +92,20 @@ QUANTITY_MAX = 1e9
 # layer and the inventory engine must clamp to the same value (SR-F-101).
 FULL_WEIGHT_MAX = 100000
 
+# Filament print-parameter extra fields (manual entry via the panel print
+# params dialog; each field carries its own unit, so ranges are per-key —
+# no single cap constant). Consumed by the update_item service schema and
+# the inventory engine's extra handling.
+PRINT_PARAM_RANGES = {
+    "print_temp": (0.0, 500.0),  # °C
+    "pressure_advance": (0.0, 2.0),
+    "flow_ratio": (0.0, 2.0),
+    "outer_wall_speed": (0.0, 2000.0),  # mm/s
+    "shrinkage": (0.0, 100.0),  # %
+    "hole_compensation": (-10.0, 10.0),  # mm
+    "max_volumetric_speed": (0.0, 100.0),  # mm³/s
+}
+
 # ----------------------------------------------------------------------
 # Item model
 # ----------------------------------------------------------------------

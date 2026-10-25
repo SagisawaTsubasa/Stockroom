@@ -369,8 +369,16 @@ def _tc3_headers(
     return headers
 
 
-def parse_ocr_text(lines: list[str]) -> list[dict[str, Any]]:
-    """Turn OCR text lines into one item suggestion via keyword rules.
+def _ocr_material_word(line: str) -> str | None:
+    """The material keyword in one line (\\b word-boundary), or None."""
+    return next(
+        (m for m in _OCR_MATERIALS if re.search(rf"\b{re.escape(m)}\b", line, re.IGNORECASE)),
+        None,
+    )
+
+
+def _ocr_suggestion(cleaned: list[str]) -> dict[str, Any]:
+    """Build one suggestion from one group of lines (single-item rules).
 
     Honest scope: material keywords, spool weight and Chinese color words
     are extractable; anything requiring understanding of the label stays
@@ -378,9 +386,6 @@ def parse_ocr_text(lines: list[str]) -> list[dict[str, Any]]:
     parse_suggestions' suggestion shape so the rest of the pipeline is
     engine-agnostic.
     """
-    cleaned = [line.strip() for line in lines if str(line).strip()]
-    if not cleaned:
-        return []
     text_all = " ".join(cleaned)
     material = next(
         (m for m in _OCR_MATERIALS if re.search(rf"\b{re.escape(m)}\b", text_all, re.IGNORECASE)),
@@ -420,7 +425,39 @@ def parse_ocr_text(lines: list[str]) -> list[dict[str, Any]]:
     }
     if extra:
         suggestion["extra"] = extra
-    return [suggestion]
+    return suggestion
+
+
+def parse_ocr_text(lines: list[str]) -> list[dict[str, Any]]:
+    """Turn OCR text lines into item suggestions via keyword rules.
+
+    Multi-item pages: each material-keyword line starts a new group (a
+    spool/label), lines before the first anchor join the first group, and
+    per-group extraction follows the single-item rules. A trailing anchor
+    group WITHOUT its own weight merges into the previous group — labels
+    repeat "颜色 材质" on a closing line as attribute continuation, not as
+    a new spool; an independent weight line is what marks a new item. A
+    page without any material anchor falls back to one suggestion over
+    all lines.
+    """
+    cleaned = [line.strip() for line in lines if str(line).strip()]
+    if not cleaned:
+        return []
+    anchors = [i for i, line in enumerate(cleaned) if _ocr_material_word(line)]
+    if not anchors:
+        return [_ocr_suggestion(cleaned)]
+    bounds = anchors[1:] + [len(cleaned)]
+    segments = [
+        cleaned[0 if i == 0 else anchor : bounds[i]]
+        for i, anchor in enumerate(anchors)
+    ]
+    groups = [segments[0]]
+    for segment in segments[1:]:
+        if _OCR_WEIGHT_RE.search(" ".join(segment)):
+            groups.append(segment)
+        else:
+            groups[-1].extend(segment)
+    return [_ocr_suggestion(group) for group in groups]
 
 
 async def _recognize_ocr(

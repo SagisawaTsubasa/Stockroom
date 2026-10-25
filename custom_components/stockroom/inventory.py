@@ -39,6 +39,7 @@ from .const import (
     FULL_WEIGHT_MAX,
     ITEM_LAST_STOCKTAKE,
     ITEM_UPDATED_AT,
+    PRINT_PARAM_RANGES,
     QUANTITY_MAX,
     SIGNAL_ITEMS_UPDATED,
 )
@@ -474,6 +475,14 @@ class InventoryEngine:
                     )
                     value = FULL_WEIGHT_MAX
                 extra[EXTRA_FULL_WEIGHT_G] = value
+        # 打印参数（七键，PRINT_PARAM_RANGES 单一来源）：null/空串清除，数值透传
+        for key in PRINT_PARAM_RANGES:
+            if key in updates:
+                value = updates[key]
+                if value is None or (isinstance(value, str) and not value.strip()):
+                    extra.pop(key, None)
+                else:
+                    extra[key] = float(value)
         self._after_mutation(item, "update")
         return item
 

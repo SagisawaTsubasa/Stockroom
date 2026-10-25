@@ -26,6 +26,7 @@ from .const import (
     EXTRA_MATERIAL,
     FLUSH_INTERVAL,
     FULL_WEIGHT_MAX,
+    PRINT_PARAM_RANGES,
     QUANTITY_MAX,
     SERVICE_ADD_ITEM,
     SERVICE_CONSUME,
@@ -132,6 +133,13 @@ UPDATE_ITEM_SCHEMA = vol.Schema(
         vol.Optional("material"): cv.string,
         vol.Optional("color"): cv.string,
         vol.Optional("full_weight_g"): _FULL_WEIGHT,
+        # 打印参数（None=清除该参数；数值范围单一来源 PRINT_PARAM_RANGES）
+        **{
+            vol.Optional(key): vol.Any(
+                None, vol.All(vol.Coerce(float), vol.Range(min=low, max=high))
+            )
+            for key, (low, high) in PRINT_PARAM_RANGES.items()
+        },
     }
 )
 LOG_FILTER_CHANGE_SCHEMA = vol.Schema(

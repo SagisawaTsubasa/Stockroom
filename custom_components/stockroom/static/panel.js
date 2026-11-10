@@ -137,6 +137,7 @@ const I18N = {
     scanConfirm: "入库",
     scanDismiss: "忽略",
     scanEditTitle: "编辑识别建议",
+    scanOcrRaw: "识别原文",
     fullWeightTag: "满卷 {n}g",
     printParams: "打印参数",
     printParamsTitle: "打印参数 — {name}",
@@ -267,6 +268,7 @@ const I18N = {
     scanConfirm: "Add",
     scanDismiss: "Dismiss",
     scanEditTitle: "Edit suggestion",
+    scanOcrRaw: "OCR text",
     fullWeightTag: "Full spool {n}g",
     printParams: "Print params",
     printParamsTitle: "Print params — {name}",
@@ -1207,7 +1209,20 @@ class StockroomPanel extends HTMLElement {
                     cat: suggestion.category || "",
                     loc: suggestion.location || "",
                   }) + this._scanExtraText(suggestion),
-              })
+              }),
+              // 识别原文折叠展示（裸 lines，防「以为 OCR 只识别出地址」）；
+              // el() 的 text 走 textContent，OCR 原文注入面天然安全
+              (suggestion.ocr_lines || []).length
+                ? el(
+                    "details",
+                    { class: "srp-scan-ocr-raw" },
+                    el("summary", { text: t("scanOcrRaw") }),
+                    el("div", {
+                      class: "srp-scan-ocr-raw-lines",
+                      text: suggestion.ocr_lines.join("\n"),
+                    })
+                  )
+                : null
             ),
             el(
               "div",

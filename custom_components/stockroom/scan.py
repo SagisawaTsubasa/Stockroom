@@ -302,6 +302,17 @@ _OCR_WEIGHT_RE = re.compile(
 # 兼容清单行的「适用(于)/兼容/支持/适配」开头特征——仅此形态（或一行列多个
 # 材质词）才不作分组锚；营销语「PLA 支持高速打印」仍是合法锚（ocr-ux-R2 #2）
 _OCR_COMPAT_RE = re.compile(r"^\s*(适用|兼容|支持|适配)")
+# 商家标签关键字字段行（真实标签实证 2026-11-09：全/半角冒号，一行可含
+# 多字段——数量必须行内锚定，「排序：25-1 数量：100」只抓 100；名称取
+# 冒号后整段。取证：debug/real-device-20261109/real-lines-20261109.md）
+_OCR_NAME_RE = re.compile(r"名称[:：]\s*(.+)")
+_OCR_QTY_RE = re.compile(r"数量[:：]\s*(\d+(?:\.\d+)?)")
+# 名称回退剥取用：克重字段段（可选「净重/毛重/重量」字段词 + 克重值）。
+# 复用 _OCR_WEIGHT_RE 的 pattern 继承密度排除（SR-F-072/081）；材质/颜色
+# 是商品名的自然组成不剥，克重是纯规格数值才剥（2026-11-09 用户返修定案）
+_OCR_WEIGHT_STRIP_RE = re.compile(
+    r"(?:净重|毛重|重量)?\s*" + _OCR_WEIGHT_RE.pattern, re.IGNORECASE
+)
 
 
 def _material_pattern(material: str) -> str:
@@ -405,11 +416,13 @@ def _ocr_suggestion(
 
     ``material_hint`` is the group's anchor material — compatibility lines
     listing other materials must not override it (ocr-ux-R1 #4). Honest
-    scope: material keywords, spool weight and Chinese color words are
+    scope: keyword-prefixed fields (名称/数量，hardware-store labels),
+    material keywords, spool weight and Chinese color words are
     extractable; anything requiring understanding of the label stays empty
     for the user to fill at confirm time. Output matches
     parse_suggestions' suggestion shape so the rest of the pipeline is
-    engine-agnostic.
+    engine-agnostic; ``ocr_lines`` carries the group's raw OCR lines for
+    the pending card to show what was actually recognized.
     """
     text_all = " ".join(cleaned)
     material = material_hint or next(
@@ -426,15 +439,41 @@ def _ocr_suggestion(
         (key for line in cleaned for key in _OCR_COLOR_WORDS if key in line),
         None,
     )
-    # 名称行与材质同口径（锚材质优先），避免子串误命中（SR-F-073）
-    name_line = next(
-        (
-            line
-            for line in cleaned
-            if material and re.search(_material_pattern(material), line, re.IGNORECASE)
-        ),
-        max(cleaned, key=len),
+    # 「名称：」关键字行优先（冒号后整段即名称，真实商家标签实证）；
+    # 无关键字回退现行选取，只剥克重 token——材质/颜色是商品名的自然
+    # 组成不剥，克重是纯规格数值才剥（2026-11-09 用户返修定案）
+    name_keyword = next(
+        (m.group(1).strip() for line in cleaned if (m := _OCR_NAME_RE.search(line))),
+        None,
     )
+    if name_keyword:
+        name_line = name_keyword
+    else:
+        # 名称行与材质同口径（锚材质优先），避免子串误命中（SR-F-073）
+        name_line = next(
+            (
+                line
+                for line in cleaned
+                if material and re.search(_material_pattern(material), line, re.IGNORECASE)
+            ),
+            max(cleaned, key=len),
+        )
+        fallback_line = name_line
+        # 剥空（整行只有克重）则保原行，名称不得为空
+        name_line = (
+            re.sub(r"\s+", " ", _OCR_WEIGHT_STRIP_RE.sub("", name_line)).strip(" ·-—")
+            or fallback_line
+        )
+    # 「数量：」行内锚定提取（一行可含多字段，「排序：25-1 数量：100」
+    # 只抓 100）；越界按未知 0 处理（SR-F-012 同型闸，引擎层
+    # add_item/_round_quantity 对确认入库的值另有兜底钳制）
+    qty_match = next(
+        (m for line in cleaned if (m := _OCR_QTY_RE.search(line))),
+        None,
+    )
+    quantity = float(qty_match.group(1)) if qty_match else 0.0
+    if not 0 < quantity <= QUANTITY_MAX:
+        quantity = 0.0
     extra: dict[str, Any] = {}
     if material:
         extra[EXTRA_MATERIAL] = material
@@ -445,8 +484,11 @@ def _ocr_suggestion(
     suggestion: dict[str, Any] = {
         "name": name_line[:60],
         "category": CATEGORY_FILAMENT if material else CATEGORY_OTHER,
-        "quantity": 0.0,
+        "quantity": quantity,
         "location": "",
+        # 识别原文随行存储（面板待确认卡展示，防「以为只识别出地址」）；
+        # additive 键：旧队列数据无此键，面板按缺省不展示
+        "ocr_lines": list(cleaned),
     }
     if extra:
         suggestion["extra"] = extra

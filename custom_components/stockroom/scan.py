@@ -329,13 +329,17 @@ _OCR_NAME_RE = re.compile(
 )
 # 数量词表=三族全集（质量换算表+计数族+其它族，SR-F-129 扩中文词）；
 # 尾随哨兵组捕获数字后紧跟的族外词首字符（unicode 字母）——词表外计量
-# 词（如「箱」）按未知 0 诚实缺省，不再裸数字误填（SR-F-129）；哨兵以
-# 前瞻排除字段词开头（合行「数量：100 库位：…」不误伤）。捕获词与组
-# 默认单位的族核算见 _ocr_suggestion（SR-F-124/129）
+# 词（如「箱」）按未知 0 诚实缺省，不再裸数字误填（SR-F-129）。哨兵是
+# 「字段词排除前瞻+字母」的守卫式可选组：排除判据放哨兵组内侧，数字
+# 捕获组先贪婪吃完整个数字串、可选单位组照常匹配族内词，二者均不因
+# 前瞻失败被拖入回溯（位次错误的强制前瞻曾把「100库位：」回溯成 10、
+# 把「100kg库位：」的单位丢成哨兵 0——SR-F-133，症状格钉在
+# test_parse_ocr_text_qty_unit_family_matrix）。捕获词与组默认单位的族
+# 核算见 _ocr_suggestion（SR-F-124/129）
 _OCR_QTY_RE = re.compile(
     rf"数量[:：]\s*(\d+(?:\.\d+)?)\s*"
     r"(千克|公斤|kg|克|斤|g|颗|个|只|件|枚|卷|包|盒|米)?"
-    rf"(?!(?:{_OCR_FIELD_WORDS})[:：])([^\W\d_])?",
+    rf"(?:(?!(?:{_OCR_FIELD_WORDS})[:：])([^\W\d_]))?",
     re.IGNORECASE,
 )
 # 名称回退剥取用：克重字段段（可选「净重/毛重/重量」字段词+可选冒号，
@@ -664,6 +668,12 @@ async def _recognize_ocr(
         _LOGGER.warning("腾讯 OCR 返回 200 但缺少 Response 信封（服务/反代异常）")
         raise ValueError("腾讯 OCR 服务返回了非预期回复（服务/反代异常）")  # noqa: TRY004
     error = response.get("Error")
+    if "Error" in response and not isinstance(error, dict):
+        # 200 + Response.Error 非对象（标量/null 等）：腾讯契约失败信封
+        # 必为 {Code,Message} 对象，畸形=服务/反代异常——明确响，不静默
+        # 跳过落「未识别到有效文字」伪装空照片（SR-F-134，同 127/130 口径）
+        _LOGGER.warning("腾讯 OCR 返回 200 但 Response.Error 不是对象（服务/反代异常）")
+        raise ValueError("腾讯 OCR 服务返回了非预期回复（服务/反代异常）")
     if error:
         code = error.get("Code", "")
         message = error.get("Message", "")

@@ -468,11 +468,25 @@ def _ocr_suggestion(
         (m for m in _OCR_MATERIALS if re.search(_material_pattern(m), text_all, re.IGNORECASE)),
         None,
     )
-    weight_match = _OCR_WEIGHT_RE.search(text_all)
+    # 克重取值字段感知（SR-F-137）：先逐行遮蔽数量字段段（「数量：500g」
+    # 是库存量，不作满卷克重），再给净重/重量字段词优先权（无则回落全文
+    # search）——「数量 500g+净重 1kg」同印的商家标签先到先得会遮蔽净重
+    # 行、毛重/净重同印会取毛重。拆组判据（parse_ocr_text 的
+    # seg_has_weight/anchor_self_weight）共用克重正则，数量行仍参与「独
+    # 立克重行」判据：拆条逻辑用户已定决策不动，现状快照钉在
+    # test_parse_ocr_text_qty_field_masked_from_full_weight
+    weight_text = " ".join(_OCR_QTY_RE.sub(" ", line) for line in cleaned)
+    prefixed = re.search(
+        r"(?:净重|重量)[:：]?\s*" + _OCR_WEIGHT_RE.pattern,
+        weight_text,
+        re.IGNORECASE,
+    )
+    weight_match = prefixed or _OCR_WEIGHT_RE.search(weight_text)
     full_weight_g = None
     if weight_match:
         value = float(weight_match.group(1))
-        # 换算表直索引（正则交替=表键同源，漂移即 KeyError 炸测试）
+        # 换算表直索引（正则交替=表键同源，漂移即 KeyError 炸测试，
+        # SR-F-140 机械对账闸门钉住）
         full_weight_g = value * _OCR_UNIT_MASS_SCALE[weight_match.group(2).lower()]
         full_weight_g = min(full_weight_g, FULL_WEIGHT_MAX)
     color_word = next(
@@ -668,15 +682,18 @@ async def _recognize_ocr(
         _LOGGER.warning("腾讯 OCR 返回 200 但缺少 Response 信封（服务/反代异常）")
         raise ValueError("腾讯 OCR 服务返回了非预期回复（服务/反代异常）")  # noqa: TRY004
     error = response.get("Error")
-    if "Error" in response and not isinstance(error, dict):
-        # 200 + Response.Error 非对象（标量/null 等）：腾讯契约失败信封
-        # 必为 {Code,Message} 对象，畸形=服务/反代异常——明确响，不静默
-        # 跳过落「未识别到有效文字」伪装空照片（SR-F-134，同 127/130 口径）
-        _LOGGER.warning("腾讯 OCR 返回 200 但 Response.Error 不是对象（服务/反代异常）")
+    if "Error" in response and (not isinstance(error, dict) or not error):
+        # 200 + Response.Error 非对象（标量/null 等）或空 dict：腾讯契约
+        # 失败信封必为含 Code/Message 的对象，畸形/空壳=服务/反代异常——
+        # 明确响，不静默跳过落「未识别到有效文字」伪装空照片
+        # （SR-F-134/139，同 127/130 口径）
+        _LOGGER.warning("腾讯 OCR 返回 200 但 Response.Error 不是对象或为空（服务/反代异常）")
         raise ValueError("腾讯 OCR 服务返回了非预期回复（服务/反代异常）")
     if error:
-        code = error.get("Code", "")
-        message = error.get("Message", "")
+        # Code/Message 归一字符串（SR-F-138）：反代常见数字错误码（401）
+        # 走「in」判断不再 TypeError，null 同归空串
+        code = str(error.get("Code") or "")
+        message = str(error.get("Message") or "")
         _LOGGER.warning("腾讯 OCR 返回错误 %s：%s", code, message)
         if "AuthFailure" in code:
             raise ValueError("腾讯 OCR 鉴权失败：请检查 SecretId/SecretKey")

@@ -43,7 +43,6 @@ from homeassistant.components.webhook import (
     async_unregister,
 )
 from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.network import NoURLAvailableError
 
@@ -1192,10 +1191,47 @@ class ScanManager:
     # ------------------------------------------------------------------
 
     def queue(self) -> dict[str, dict[str, Any]]:
-        """This entry's pending suggestions (sid -> suggestion + meta)."""
-        return (
-            self.store.get_meta(META_SCAN_PENDING).setdefault(self.entry.entry_id, {})
-        )
+        """This entry's pending suggestions (sid -> suggestion + meta).
+
+        SR-F-165/166/167（R11 用户拍板「queue() 出口规整」）：读取出口就地
+        规整——坏条目剔除（WARNING+mark_dirty 落盘自愈）、id 失配回写桶键、
+        created_at 非 str 收空串。队列公开可写+META_SCAN_PENDING 持久化跨
+        版本/手工可达，坏值此前靠逐消费点各自补防（SR-F-161/163 四轮同族
+        震荡：confirm 留队报错、dismiss 哨兵计数、淘汰/overview 排序兜底）
+        ——重做为出口单点规整后，下游消费点（confirm/dismiss/淘汰排序/
+        overview 排序/REST 下发/服务 all/通知 membership）只见纯 dict，新
+        消费点天生安全。规整幂等：干净桶零动作零标脏。"""
+        bucket = self.store.get_meta(META_SCAN_PENDING).setdefault(self.entry.entry_id, {})
+        repaired = False
+        for sid, entry in list(bucket.items()):
+            if not isinstance(entry, dict):
+                # 坏条目（None 等）在出口剔除：WARNING 在案（错误必须响
+                # 不静默）+mark_dirty 让下次 flush 落净化后的盘（自愈）。
+                # 与 SR-F-163「留队+明确错误」的语义对账：剔除有日志+落盘，
+                # 保护强度只升不降（留队报错但每次读取都重炸）。
+                _LOGGER.warning(
+                    "[%s] 扫描队列条目损坏（sid=%s，非对象：%s），已剔除并将随下次保存落盘",
+                    self.engine.warehouse_name, sid, type(entry).__name__,
+                )
+                del bucket[sid]
+                repaired = True
+                continue
+            if entry.get("id") != sid:
+                # SR-F-164 邻界面：legacy/手工数据 entry["id"] 与桶键失配
+                # → 通知 tag/确认/忽略 action/面板 suggestion.id 全部落空；
+                # 以桶键为准回写（桶键是 pop/lookup 的权威）。
+                entry["id"] = sid
+                repaired = True
+            if not isinstance(entry.get("created_at"), str):
+                # SR-F-167：排序 key 直接吃该值，null/数字让 sorted/min
+                # TypeError（``.get(key, "")`` 只覆盖缺键不覆盖坏值）——
+                # 非 str 收空串=排最旧（与既有坏值兜底语义一致），坏数据
+                # 不破坏好数据的排序。
+                entry["created_at"] = ""
+                repaired = True
+        if repaired:
+            self.store.mark_dirty(self.entry.entry_id)
+        return bucket
 
     def queue_suggestions(self, suggestions: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Store suggestions with ids; evict oldest beyond the queue cap."""
@@ -1207,8 +1243,11 @@ class ScanManager:
         # 必须 ValueError：两个调用方（webhook/_handle_webhook、面板
         # ScanView）只捕 ValueError 转 ok:false（1172 行先例注释同构），
         # 其他异常类型落通用「识别失败」诊断退化。
-        bad = next((s for s in suggestions if not isinstance(s, dict)), None)
-        if bad is not None:
+        # SR-F-165（R11）：判定哨兵必须用 _MISSING——``next(..., None)``
+        # 的默认值与坏元素 None 同值放行（SR-F-163「None 与缺键不可区分」
+        # 同族在 R10 新代码原样复发，None 批 ``**None`` TypeError 半批入桶）。
+        bad = next((s for s in suggestions if not isinstance(s, dict)), _MISSING)
+        if bad is not _MISSING:
             raise ValueError(
                 f"扫描建议数据损坏（非对象：{type(bad).__name__}），整批未入库"
             )
@@ -1224,15 +1263,9 @@ class ScanManager:
             bucket[sid] = entry
             queued.append(entry)
         while len(bucket) > SCAN_MAX_QUEUE:
-            # SR-F-163：排序 key 对非 dict 条目兜底空串——坏条目（None 等）
-            # 在此 AttributeError 会让插入之后、mark_dirty 之前的队列半批
-            # 进内存未标脏，webhook 侧冒 500。
-            oldest = min(
-                bucket,
-                key=lambda sid: (
-                    bucket[sid].get("created_at", "") if isinstance(bucket[sid], dict) else ""
-                ),
-            )
+            # 出口规整+写入面生成键保证桶内条目恒 dict 且 created_at 恒
+            # str（SR-F-163 的 isinstance 兜底死代码随之简化）。
+            oldest = min(bucket, key=lambda sid: bucket[sid].get("created_at", ""))
             del bucket[oldest]
         self.store.mark_dirty(self.entry.entry_id)
         return queued
@@ -1241,26 +1274,23 @@ class ScanManager:
         self, sid: str, overrides: dict[str, Any] | None = None
     ) -> dict[str, Any] | None:
         """Turn one suggestion into a real item via the regular add path."""
-        # SR-F-163：pop 的 default 用 _MISSING 哨兵——None 值条目与「无此
-        # sid」不再不可区分，None 落入下方 isinstance 守卫走「数据损坏已
-        # 留队」明确报错（旧实现 pop(sid, None) 把 None 条目静默当不存在
-        # 删除，与 SR-F-161 语义相反）。
+        # SR-F-163：pop 的 default 用 _MISSING 哨兵分离「缺键」与「值」。
+        # R11 出口规整重做（用户拍板）后 None/非 dict 条目在 queue() 读取
+        # 出口已被剔除（WARNING+mark_dirty 落盘自愈，SR-F-161/163 防线语义
+        # 上移规整层、强度只升不降），pop 对已剔除 sid 返回 _MISSING →
+        # 「不存在或已处理」；桶里既有坏值时 pop 不再静默删除（规整层先
+        # 净化并落盘）。
         suggestion = self.queue().pop(sid, _MISSING)
         if suggestion is _MISSING:
             return None
         # SR-F-161：前置归一（fields/overrides/extra 构造与坏形态检查）全
         # 部纳入 restore try——队列公开可写+持久化跨版本，坏形态条目 pop
-        # 后必须能回队（旧实现归一在 try 外：坏 extra 的 dict()/非 dict
-        # 建议的 .items() 抛错即建议已丢+scan_confirm 服务无信息 500，
-        # SR-F-159 同款兄弟面）。可救则救（坏 extra 置空告警继续），不可
-        # 救按坏条目拒绝+留队+明确错误（与 add_item 的 StockroomItemError
-        # 同走 except 回队通道）
+        # 后必须能回队（旧实现归一在 try 外：坏 extra 的 dict() 抛错即
+        # 建议已丢+scan_confirm 服务无信息 500，SR-F-159 同款兄弟面）。
+        # 可救则救（坏 extra 置空告警继续）。原非 dict 建议 isinstance 守卫
+        # 随 R11 出口规整上移 queue()：规整后 pop 出的条目恒为 dict，守卫
+        # 不可达=死代码删除（防线由规整层的剔除+WARNING+落盘承担）。
         try:
-            if not isinstance(suggestion, dict):
-                raise HomeAssistantError(
-                    f"扫描建议数据损坏（非对象：{type(suggestion).__name__}），"
-                    "已留队，可忽略该条目或重新识别"
-                )
             fields = {key: value for key, value in suggestion.items() if key not in ("id", "created_at")}
             overrides = dict(overrides or {})
             raw_extra = fields.get("extra")
@@ -1311,12 +1341,30 @@ class ScanManager:
                 fields["extra"] = extra
             else:
                 fields.pop("extra", None)
+            # SR-F-168：low_threshold 不经服务 schema（持久化队列公开可写/
+            # 跨版本可达），坏类型直达 add_item 的裸 float() 抛无信息
+            # ValueError/TypeError（建议留队但调用方只见堆栈）。按
+            # EXTRA_FULL_WEIGHT_G 既有范式可救则救：坏值 WARNING+置 None
+            # 落仓库默认阈值，入库继续（坏 extra 置空先例同构：辅助字段
+            # 坏值不拦整条入库；quantity 在 add_item 内落 0.0、unit/
+            # location 走 str()，同侧对齐）。
+            low_threshold = fields.get("low_threshold")
+            if low_threshold is not None:
+                try:
+                    low_threshold = float(low_threshold)
+                except (TypeError, ValueError):
+                    _LOGGER.warning(
+                        "[%s] 扫描建议 low_threshold 损坏（%r），回落仓库默认阈值",
+                        self.engine.warehouse_name,
+                        low_threshold,
+                    )
+                    low_threshold = None
             item = self.engine.add_item(
                 name=fields["name"],
                 category=fields.get("category", CATEGORY_OTHER),
                 quantity=fields.get("quantity", 0.0),
                 unit=fields.get("unit"),
-                low_threshold=fields.get("low_threshold"),
+                low_threshold=low_threshold,
                 location=fields.get("location"),
                 extra=fields.get("extra"),
             )

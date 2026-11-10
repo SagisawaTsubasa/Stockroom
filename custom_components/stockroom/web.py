@@ -120,15 +120,15 @@ def _warehouse_payload(engine: Any, scan_view: dict[str, Any]) -> dict[str, Any]
 def _scan_view(engine: Any) -> dict[str, Any]:
     """Scan-tab info for one warehouse: enabled/pending/webhook URL."""
     scan = engine.scan
-    # SR-F-163：排序 key 对非 dict 条目兜底空串——pending 桶与队列持久化
-    # 同源（公开可写+跨版本可达），单条 null 就会在本函数 AttributeError，
-    # 而 _scan_view 在 overview 聚合里被调用：面板每 5 秒轮询的 overview
-    # REST 整页 500（坏条目炸掉整个面板视图）。
+    # SR-F-165/166/167（R11 出口规整）：queue() 读取出口已就地规整（坏条
+    # 目剔除+WARNING+mark_dirty 落盘、id 失配回写桶键、created_at 非 str
+    # 收空串）——排序 key 与 REST 下发只见纯 dict：SR-F-163 的 isinstance
+    # 兜底死代码随之简化；坏条目不再原样下发（SR-F-166 面板渲染 TypeError
+    # 面）也不再让排序 TypeError（SR-F-167 ``.get(key, "")`` 只覆盖缺键
+    # 不覆盖坏值）。面板（panel.js）零逻辑改动。
     pending = sorted(
         _get_store_scan_pending(engine, scan),
-        key=lambda sid_entry: (
-            sid_entry[1].get("created_at", "") if isinstance(sid_entry[1], dict) else ""
-        ),
+        key=lambda sid_entry: sid_entry[1].get("created_at", ""),
     )
     return {
         "enabled": scan is not None,

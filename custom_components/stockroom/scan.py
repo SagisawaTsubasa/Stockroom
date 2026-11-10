@@ -380,6 +380,15 @@ _OCR_WEIGHT_STRIP_RE = re.compile(
     + r"(?:\s*[/／]\s*(?:" + "|".join(_OCR_WEIGHT_DENOM_WORDS) + r"))?装?",
     re.IGNORECASE,
 )
+# 字段行判别（两层关键字识别第一层，SR-F-155/156 用户拍板重做
+# 2026-11-10）：含任意「字段词[:：]」的行=商家标签字段行，豁免清单过滤
+# 整行作证。字段词=名称关键字「名称」∪名称边界表∪克重字段词——
+# _OCR_QTY_FIELD_WORDS 已是边界表∪克重字段词的同源拼接（SR-F-142 常量，
+# 禁第四份手抄），「名称」与 _OCR_NAME_RE 的关键字字面量同款（它另有
+# 捕获/边界语义不共用常量）。冒号必须：克重字段词带可选冒号会把「净重
+# 1kg」裸克重行也豁免，「适用于…白色 净重 1kg」营销行重新入证（SR-F-158
+# 格红）；名称/数量/库位等真实字段行恒带冒号（真实标签取证 2026-11-09）
+_OCR_FIELD_LINE_RE = re.compile(rf"(?:名称|{_OCR_QTY_FIELD_WORDS})[:：]")
 
 
 def _material_pattern(material: str) -> str:
@@ -491,14 +500,27 @@ def _ocr_suggestion(
     engine-agnostic; ``ocr_lines`` carries the group's raw OCR lines for
     the pending card to show what was actually recognized.
     """
-    # 证据行集合（SR-F-149）：兼容清单行（「适用(于)/兼容/支持/适配」开头
-    # 或一行列 ≥2 材质词，_is_compat_listing）只作锚排除不作证据——材质/
-    # 克重/颜色/名称回退四处扫描不再吃营销行（无锚页名称不吞「适用于
-    # PLA/PETG/ABS」、真商品行不丢）；整页只有兼容行时回落全行保名称非空。
-    # 「名称：」关键字行与 ocr_lines 原文展示仍走 cleaned：字段行不是清单
-    # 形态，识别原文是已定决策的展示语义（防「以为只识别出地址」）不过滤
-    evidence = [line for line in cleaned if not _is_compat_listing(line)] or cleaned
-    text_all = " ".join(evidence)
+    # 两层关键字识别（SR-F-155/156 用户拍板重做 2026-11-10，整体替换 R7
+    # 的 evidence 五处全过滤机制不留双机制）。第一层行分类：字段行（含
+    # 「字段词[:：]」，_OCR_FIELD_LINE_RE）豁免清单过滤整行作证；自由行
+    # 按清单过滤——非清单自由行作证，清单行（适用/兼容开头或一行 ≥2 材
+    # 质词）不作证据。第二层按消费点组装扫描输入：材质/颜色/克重吃
+    # scan_lines（保持 cleaned 顺序）；名称关键字/数量/ocr_lines 原文展示
+    # 仍走 cleaned（字段行非清单形态、数量与展示语义独立，§1 决策 2）；
+    # 名称回退候选同 scan_lines，空则回落 cleaned 全行保名称（全兼容页
+    # 名称非空，材质/分类/extra 不回落——SR-F-155 修法收口，营销行不得
+    # 定义材质/分类）。重做理由：R7「五处全过滤+or cleaned 回落」在 R8
+    # 被证边界震荡——回落把营销行重新喂回全部扫描（SR-F-155 营销页被判
+    # filament）、清单判据不区分字段行误杀「名称：PLA/PETG 双色线材」
+    # 致克重/材质静默丢失（SR-F-156 格 A）；字段行豁免后格 A 恢复 R7 前
+    # 行为，「支持高速打印的 PLA 线材」类前缀商品行仍被排除=既有口径
+    # 显式钉格（不在本批扩）
+    scan_lines = [
+        line
+        for line in cleaned
+        if _OCR_FIELD_LINE_RE.search(line) or not _is_compat_listing(line)
+    ]
+    text_all = " ".join(scan_lines)
     material = material_hint or next(
         (m for m in _OCR_MATERIALS if re.search(_material_pattern(m), text_all, re.IGNORECASE)),
         None,
@@ -513,7 +535,7 @@ def _ocr_suggestion(
     # seg_has_weight/anchor_self_weight）共用克重正则，数量行仍参与「独
     # 立克重行」判据：拆条逻辑用户已定决策不动，现状快照钉在
     # test_parse_ocr_text_qty_field_masked_from_full_weight
-    weight_text = " ".join(_OCR_QTY_RE.sub(" ", line) for line in evidence)
+    weight_text = " ".join(_OCR_QTY_RE.sub(" ", line) for line in scan_lines)
     prefixed = re.search(
         r"(?:" + "|".join(_OCR_WEIGHT_PRIORITY_FIELDS) + r")[:：]?\s*"
         + _OCR_WEIGHT_RE.pattern,
@@ -529,7 +551,7 @@ def _ocr_suggestion(
         full_weight_g = value * _OCR_UNIT_MASS_SCALE[weight_match.group(2).lower()]
         full_weight_g = min(full_weight_g, FULL_WEIGHT_MAX)
     color_word = next(
-        (key for line in evidence for key in _OCR_COLOR_WORDS if key in line),
+        (key for line in scan_lines for key in _OCR_COLOR_WORDS if key in line),
         None,
     )
     # 「名称：」关键字行优先（冒号后整段即名称，真实商家标签实证）；
@@ -549,14 +571,17 @@ def _ocr_suggestion(
         )
     else:
         # 名称行与材质同口径（锚材质优先），避免子串误命中（SR-F-073）；
-        # 证据面走 evidence（SR-F-149：兼容行不抢名称）
+        # 候选面走 scan_lines（两层分类：清单行不抢名称），整页只有清单
+        # 行时回落 cleaned 全行保名称（SR-F-155：仅名称回落，材质/分类
+        # 不回落）
+        name_pool = scan_lines or cleaned
         name_line = next(
             (
                 line
-                for line in evidence
+                for line in name_pool
                 if material and re.search(_material_pattern(material), line, re.IGNORECASE)
             ),
-            max(evidence, key=len),
+            max(name_pool, key=len),
         )
         fallback_line = name_line
         # 剥空（整行只有克重）则保原行，名称不得为空
@@ -580,6 +605,13 @@ def _ocr_suggestion(
         None,
     )
     quantity = 0.0
+    # unit 契约补齐（SR-F-157）：docstring 声称与 parse_suggestions 的
+    # suggestion 形状一致而缺 unit 键——下游面板待确认卡/编辑框、通知
+    # summary、confirm→add_item 三处都读它（修前面板单位空白、通知
+    # 「（100 ）」、「数量：2盒」入库 2 个）。g 组恒用分类默认 g（质量族
+    # 折算后基准不变、冲突词数量已置 0）；非 g 组捕获计数族/包装族单位
+    # 词时随 quantity 照填捕获词，质量族/族外词/裸数字落分类默认
+    unit = DEFAULT_UNITS.get(category, "个")
     if qty_match:
         quantity = float(qty_match.group(1))
         word = (qty_match.group(2) or "").lower()
@@ -588,6 +620,8 @@ def _ocr_suggestion(
             if scale is not None:
                 quantity = quantity * scale if is_g_group else 0.0
             elif word in _OCR_UNIT_COUNT_WORDS or word in _OCR_UNIT_PACKAGE_WORDS:
+                if not is_g_group:
+                    unit = word
                 quantity = 0.0 if is_g_group else quantity
             else:
                 quantity = 0.0
@@ -606,6 +640,7 @@ def _ocr_suggestion(
         "name": name_line[:60],
         "category": category,
         "quantity": quantity,
+        "unit": unit,
         "location": "",
         # 识别原文随行存储（面板待确认卡展示，防「以为只识别出地址」）；
         # additive 键：旧队列数据无此键，面板按缺省不展示
@@ -1193,9 +1228,16 @@ class ScanManager:
             else:
                 extra.pop(EXTRA_FULL_WEIGHT_G, None)
         fields.update({key: value for key, value in overrides.items() if value is not None})
-        # 空名称覆盖没有意义（add_item 会 slugify 出哈希 id）——保留识别名
+        # 空名称覆盖没有意义（add_item 会 slugify 出哈希 id）——保留识别名。
+        # 右值走 .get 兜底链收空串（SR-F-159 坏条目防线）：旧实现 fields
+        # ["name"] 直索引，缺 name 的坏条目在此 KeyError 且位于 add_item
+        # 的 restore try 之外——建议已 pop 丢失+scan_confirm 服务 500；
+        # "name": None 旧实现经 add_item 的 str(name).strip() 变「None」
+        # 字面名条目。收空串后坏条目滑入 add_item 既有空名拒绝
+        # （StockroomItemError 在 restore try 内：建议留队、错误明确、
+        # 服务干净失败），override 带有效名称的编辑补名修复流不受影响
         if not str(fields.get("name") or "").strip():
-            fields["name"] = suggestion.get("name") or fields["name"]
+            fields["name"] = suggestion.get("name") or fields.get("name") or ""
         if extra:
             fields["extra"] = extra
         else:

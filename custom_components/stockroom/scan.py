@@ -308,11 +308,17 @@ _OCR_UNIT_COUNT_WORDS = ("颗", "个", "只", "件", "枚")
 _OCR_UNIT_PACKAGE_WORDS = ("卷", "包", "盒", "米")
 # 克重：中文质量词入交替（「净重 1公斤」要能提 full_weight_g 且同材质
 # 拆组判据随之正确，SR-F-129）；数字+单位后不能跟 ASCII 字母数字（挡
-# PLA2 类粘连）、斜杠（半角/全角）或「空白+斜杠」序列——排除 g/cm³ 密
-# 度与其全角/空格变体（SR-F-072/081）；\b 换 (?![A-Za-z0-9])：Python \b
-# 把 CJK 当词字符，「1kg装」被挡致满卷克重漏提+名称残留（SR-F-132）
+# PLA2 类粘连）；斜杠守卫收窄到长度/密度单位（SR-F-143）：只排除斜杠
+# 后以 cm/mm/m 开头的密度/线密度形态（g/cm³、kg/m³、g/m² 及上标/全角/
+# ASCII 数字幂次变体全挡，SR-F-072/081），「净重 1kg/卷」「250g/包」
+# 按件规格是合法克重不再被无差别挡掉（修前静默漏提无日志；分母全为
+# 中文故无漏挡面）。守卫尾不用 \b：Python \b 把 unicode 数字（含上标
+# ³²）与 CJK 全当词字符，「cm³」的 m 后 \b 不成立、密度反格反漏挡
+# （本机实跑现录，SR-F-132 同族教训）；\b 换 (?![A-Za-z0-9])：Python
+# \b 把 CJK 当词字符，「1kg装」被挡致满卷克重漏提+名称残留（SR-F-132）
 _OCR_WEIGHT_RE = re.compile(
-    r"(\d+(?:\.\d+)?)\s*(千克|公斤|kg|克|斤|g)(?![A-Za-z0-9])(?!\s*[/\uFF0F])",
+    r"(\d+(?:\.\d+)?)\s*(千克|公斤|kg|克|斤|g)(?![A-Za-z0-9])"
+    r"(?!\s*[/\uFF0F]\s*(?:cm|mm|m))",
     re.IGNORECASE,
 )
 # 兼容清单行的「适用(于)/兼容/支持/适配」开头特征——仅此形态（或一行列多个
@@ -327,6 +333,17 @@ _OCR_FIELD_WORDS = "库位|排序|数量|公司|电话|地址|执行标准|生�
 _OCR_NAME_RE = re.compile(
     rf"名称[:：]\s*(.+?)(?=\s+(?:{_OCR_FIELD_WORDS})[:：]|$)"
 )
+# 克重字段词（净重/毛重/重量）单一来源（SR-F-144）：strip 剥取、数量哨
+# 兵排除表、净重优先前缀、拆组判据四消费点同源拼接/引用，禁手抄第四份
+# （对账闸门 test_ocr_weight_field_wordlist_mechanical_reconciliation 钉）。
+# 优先表=显式差集（毛重不入优先：毛重是包装重，净重优先语义 SR-F-137）
+_OCR_WEIGHT_FIELDS = ("净重", "毛重", "重量")
+_OCR_WEIGHT_PRIORITY_FIELDS = ("净重", "重量")
+# 数量哨兵专用排除表（SR-F-142）：名称边界表不含克重字段词——「数量：1
+# 净重：1kg」的「净」会被哨兵当族外计量词捕获（数量置 0+遮蔽吞净重首
+# 字），数量哨兵的排除表需含克重字段词族；名称边界表保持原表不动
+# （克重字段段由 strip RE 单独剥，名称边界不截）
+_OCR_QTY_FIELD_WORDS = _OCR_FIELD_WORDS + "|" + "|".join(_OCR_WEIGHT_FIELDS)
 # 数量词表=三族全集（质量换算表+计数族+其它族，SR-F-129 扩中文词）；
 # 尾随哨兵组捕获数字后紧跟的族外词首字符（unicode 字母）——词表外计量
 # 词（如「箱」）按未知 0 诚实缺省，不再裸数字误填（SR-F-129）。哨兵是
@@ -339,17 +356,20 @@ _OCR_NAME_RE = re.compile(
 _OCR_QTY_RE = re.compile(
     rf"数量[:：]\s*(\d+(?:\.\d+)?)\s*"
     r"(千克|公斤|kg|克|斤|g|颗|个|只|件|枚|卷|包|盒|米)?"
-    rf"(?:(?!(?:{_OCR_FIELD_WORDS})[:：])([^\W\d_]))?",
+    rf"(?:(?!(?:{_OCR_QTY_FIELD_WORDS})[:：])([^\W\d_]))?",
     re.IGNORECASE,
 )
 # 名称回退剥取用：克重字段段（可选「净重/毛重/重量」字段词+可选冒号，
-# 字段词缺省时裸克重 token 照剥；「净重：1kg」整段剥净 SR-F-126）+包装
-# 后缀「装」（「250g装/1kg装」连装剥净不残留，SR-F-132）。复用
-# _OCR_WEIGHT_RE 的 pattern 继承中文质量词与密度排除（SR-F-129/072/
-# 081）；材质/颜色是商品名的自然组成不剥，克重是纯规格数值才剥
-# （2026-11-09 用户返修定案）
+# 字段词缺省时裸克重 token 照剥；「净重：1kg」整段剥净 SR-F-126）+按件
+# 分母可选段（「净重 1kg/卷」随 SR-F-143 守卫收窄入合法克重，整段含
+# 「/卷」剥净不残留斜杠碎片，词表与数量其它族同源）+包装后缀「装」
+# （「250g装/1kg装」连装剥净不残留，SR-F-132）。复用 _OCR_WEIGHT_RE 的
+# pattern 继承中文质量词与密度排除（SR-F-129/072/081）；材质/颜色是
+# 商品名的自然组成不剥，克重是纯规格数值才剥（2026-11-09 用户返修定案）
 _OCR_WEIGHT_STRIP_RE = re.compile(
-    r"(?:(?:净重|毛重|重量)[:：]?)?\s*" + _OCR_WEIGHT_RE.pattern + r"装?",
+    r"(?:(?:" + "|".join(_OCR_WEIGHT_FIELDS) + r")[:：]?)?\s*"
+    + _OCR_WEIGHT_RE.pattern
+    + r"(?:\s*[/／]\s*(?:" + "|".join(_OCR_UNIT_PACKAGE_WORDS) + r"))?装?",
     re.IGNORECASE,
 )
 
@@ -469,16 +489,20 @@ def _ocr_suggestion(
         None,
     )
     # 克重取值字段感知（SR-F-137）：先逐行遮蔽数量字段段（「数量：500g」
-    # 是库存量，不作满卷克重），再给净重/重量字段词优先权（无则回落全文
-    # search）——「数量 500g+净重 1kg」同印的商家标签先到先得会遮蔽净重
-    # 行、毛重/净重同印会取毛重。拆组判据（parse_ocr_text 的
+    # 是库存量，不作满卷克重），再给净重/重量字段词优先权——优先前缀在
+    # 未遮蔽原文上搜（SR-F-142）：前缀是强约束，数量字段不会误命中
+    # 「净重/重量」字样；遮蔽文本上搜会在「数量：1 净重：1kg」处吞掉
+    # 净重首字（数量哨兵把「净」当族外计量词捕获，行残成「重：1kg」）
+    # 致优先失效、回落静默取毛重。遮蔽文本只做无前缀回落（数量段不作
+    # 满卷克重的语义不变）。拆组判据（parse_ocr_text 的
     # seg_has_weight/anchor_self_weight）共用克重正则，数量行仍参与「独
     # 立克重行」判据：拆条逻辑用户已定决策不动，现状快照钉在
     # test_parse_ocr_text_qty_field_masked_from_full_weight
     weight_text = " ".join(_OCR_QTY_RE.sub(" ", line) for line in cleaned)
     prefixed = re.search(
-        r"(?:净重|重量)[:：]?\s*" + _OCR_WEIGHT_RE.pattern,
-        weight_text,
+        r"(?:" + "|".join(_OCR_WEIGHT_PRIORITY_FIELDS) + r")[:：]?\s*"
+        + _OCR_WEIGHT_RE.pattern,
+        text_all,
         re.IGNORECASE,
     )
     weight_match = prefixed or _OCR_WEIGHT_RE.search(weight_text)
@@ -605,8 +629,7 @@ def parse_ocr_text(lines: list[str]) -> list[dict[str, Any]]:
         anchor_line = cleaned[anchors[i][0]]
         anchor_self_weight = (
             _OCR_WEIGHT_RE.search(anchor_line) is not None
-            or "净重" in anchor_line
-            or "重量" in anchor_line
+            or any(w in anchor_line for w in _OCR_WEIGHT_PRIORITY_FIELDS)
         )
         # 开新项要求锚段有独立克重；但「复述行在净重行之前」的同材质卷
         # （锚行本身无克重、前组尚无克重）仍是同一卷的属性续行（ocr-ux-R2 #1）
@@ -691,9 +714,18 @@ async def _recognize_ocr(
         raise ValueError("腾讯 OCR 服务返回了非预期回复（服务/反代异常）")
     if error:
         # Code/Message 归一字符串（SR-F-138）：反代常见数字错误码（401）
-        # 走「in」判断不再 TypeError，null 同归空串
+        # 走「in」判断不再 TypeError，null 同归空串；非空 dict 缺键/键值
+        # 均空时文案兜底（SR-F-145）——失败信封不带详情仍是服务/反代异
+        # 常，不得落「腾讯 OCR 错误 ：」零信息文案装正常
         code = str(error.get("Code") or "")
         message = str(error.get("Message") or "")
+        if not code and not message:
+            _LOGGER.warning(
+                "腾讯 OCR 返回 200 但 Response.Error 未携带 Code/Message（服务/反代异常）"
+            )
+            raise ValueError(
+                "腾讯 OCR 返回了未携带错误详情的失败信封（服务/反代异常）"
+            )
         _LOGGER.warning("腾讯 OCR 返回错误 %s：%s", code, message)
         if "AuthFailure" in code:
             raise ValueError("腾讯 OCR 鉴权失败：请检查 SecretId/SecretKey")

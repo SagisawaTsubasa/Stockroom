@@ -294,10 +294,26 @@ _OCR_COLOR_WORDS = {
     "粉色": "#FF80C0", "棕色": "#8B4513", "灰色": "#808080",
     "金色": "#D4AF37", "银色": "#C0C0C0", "透明": "#E8F4F8",
 }
-# g 后不能跟字母、斜杠（半角/全角）或"空白+斜杠"序列——排除 "g/cm³" 密度
-# 与其全角/空格变体（SR-F-072/081）
+# 质量单位词换算表（基准=filament 默认单位 g；DEFAULT_UNITS 全值域实证
+# =g/颗/个）：kg/千克/公斤×1000、斤×500、g/克×1（SR-F-129；克重提取与
+# 数量族核算共用，下方正则交替与此表同源维护）
+_OCR_UNIT_MASS_SCALE = {
+    "kg": 1000.0, "千克": 1000.0, "公斤": 1000.0,
+    "g": 1.0, "克": 1.0, "斤": 500.0,
+}
+# 计数族互认词（颗/个=DEFAULT_UNITS 计数值；只/件/枚=标签常见计量词）
+# 与包装/计量其它族（卷/包/盒/米，SR-F-124 钉过卷）：非 g 组照填、对
+# g 组冲突（SR-F-129）
+_OCR_UNIT_COUNT_WORDS = ("颗", "个", "只", "件", "枚")
+_OCR_UNIT_PACKAGE_WORDS = ("卷", "包", "盒", "米")
+# 克重：中文质量词入交替（「净重 1公斤」要能提 full_weight_g 且同材质
+# 拆组判据随之正确，SR-F-129）；数字+单位后不能跟 ASCII 字母数字（挡
+# PLA2 类粘连）、斜杠（半角/全角）或「空白+斜杠」序列——排除 g/cm³ 密
+# 度与其全角/空格变体（SR-F-072/081）；\b 换 (?![A-Za-z0-9])：Python \b
+# 把 CJK 当词字符，「1kg装」被挡致满卷克重漏提+名称残留（SR-F-132）
 _OCR_WEIGHT_RE = re.compile(
-    r"(\d+(?:\.\d+)?)\s*(kg|g)\b(?!\s*[/\uFF0F])", re.IGNORECASE
+    r"(\d+(?:\.\d+)?)\s*(千克|公斤|kg|克|斤|g)(?![A-Za-z0-9])(?!\s*[/\uFF0F])",
+    re.IGNORECASE,
 )
 # 兼容清单行的「适用(于)/兼容/支持/适配」开头特征——仅此形态（或一行列多个
 # 材质词）才不作分组锚；营销语「PLA 支持高速打印」仍是合法锚（ocr-ux-R2 #2）
@@ -307,22 +323,30 @@ _OCR_COMPAT_RE = re.compile(r"^\s*(适用|兼容|支持|适配)")
 # 冒号后整段，右边界用「字段词+冒号」前瞻截断（OCR 合并行时名称不粘
 # 「库位：…」，边界词只截断不解析，SR-F-123）。取证：
 # debug/real-device-20261109/real-lines-20261109.md）
+_OCR_FIELD_WORDS = "库位|排序|数量|公司|电话|地址|执行标准|生产日期"
 _OCR_NAME_RE = re.compile(
-    r"名称[:：]\s*(.+?)(?=\s+(?:库位|排序|数量|公司|电话|地址|执行标准|生产日期)[:：]|$)"
+    rf"名称[:：]\s*(.+?)(?=\s+(?:{_OCR_FIELD_WORDS})[:：]|$)"
 )
-# 数量词表=库存既有 unit 值域（SCAN_PROMPT「颗|个|卷|g」+ DEFAULT_UNITS）
-# + 标签常见包装/计量词（包/盒/米）+ 克重族 kg/g；捕获词与组默认单位
-# 语义核对见 _ocr_suggestion（冲突按未知 0，SR-F-124）
+# 数量词表=三族全集（质量换算表+计数族+其它族，SR-F-129 扩中文词）；
+# 尾随哨兵组捕获数字后紧跟的族外词首字符（unicode 字母）——词表外计量
+# 词（如「箱」）按未知 0 诚实缺省，不再裸数字误填（SR-F-129）；哨兵以
+# 前瞻排除字段词开头（合行「数量：100 库位：…」不误伤）。捕获词与组
+# 默认单位的族核算见 _ocr_suggestion（SR-F-124/129）
 _OCR_QTY_RE = re.compile(
-    r"数量[:：]\s*(\d+(?:\.\d+)?)\s*(卷|颗|个|包|盒|米|kg|g)?",
+    rf"数量[:：]\s*(\d+(?:\.\d+)?)\s*"
+    r"(千克|公斤|kg|克|斤|g|颗|个|只|件|枚|卷|包|盒|米)?"
+    rf"(?!(?:{_OCR_FIELD_WORDS})[:：])([^\W\d_])?",
     re.IGNORECASE,
 )
 # 名称回退剥取用：克重字段段（可选「净重/毛重/重量」字段词+可选冒号，
-# 字段词缺省时裸克重 token 照剥；「净重：1kg」整段剥净 SR-F-126）。
-# 复用 _OCR_WEIGHT_RE 的 pattern 继承密度排除（SR-F-072/081）；材质/颜色
-# 是商品名的自然组成不剥，克重是纯规格数值才剥（2026-11-09 用户返修定案）
+# 字段词缺省时裸克重 token 照剥；「净重：1kg」整段剥净 SR-F-126）+包装
+# 后缀「装」（「250g装/1kg装」连装剥净不残留，SR-F-132）。复用
+# _OCR_WEIGHT_RE 的 pattern 继承中文质量词与密度排除（SR-F-129/072/
+# 081）；材质/颜色是商品名的自然组成不剥，克重是纯规格数值才剥
+# （2026-11-09 用户返修定案）
 _OCR_WEIGHT_STRIP_RE = re.compile(
-    r"(?:(?:净重|毛重|重量)[:：]?)?\s*" + _OCR_WEIGHT_RE.pattern, re.IGNORECASE
+    r"(?:(?:净重|毛重|重量)[:：]?)?\s*" + _OCR_WEIGHT_RE.pattern + r"装?",
+    re.IGNORECASE,
 )
 
 
@@ -444,7 +468,8 @@ def _ocr_suggestion(
     full_weight_g = None
     if weight_match:
         value = float(weight_match.group(1))
-        full_weight_g = value * 1000 if weight_match.group(2).lower() == "kg" else value
+        # 换算表直索引（正则交替=表键同源，漂移即 KeyError 炸测试）
+        full_weight_g = value * _OCR_UNIT_MASS_SCALE[weight_match.group(2).lower()]
         full_weight_g = min(full_weight_g, FULL_WEIGHT_MAX)
     color_word = next(
         (key for line in cleaned for key in _OCR_COLOR_WORDS if key in line),
@@ -478,11 +503,14 @@ def _ocr_suggestion(
     # 「数量：」行内锚定提取（一行可含多字段，「排序：25-1 数量：100」
     # 只抓 100）；越界按未知 0 处理（SR-F-012 同型闸，引擎层
     # add_item/_round_quantity 对确认入库的值另有兜底钳制）。
-    # 单位语义核对（SR-F-124）：数量自带单位词时对组默认单位核对
-    # （确认入库即落 DEFAULT_UNITS[category]）——g 组 g 直填、kg ×1000
-    # 换算；冲突（「3 卷」对 g 组）按未知 0 诚实缺省，确认时手补，
-    # 禁静默把 3 卷填成 3 g
+    # 单位族核算（SR-F-124/129）：数量自带单位词时按族对组默认单位
+    # （确认入库即落 DEFAULT_UNITS[category]）核对——质量族对 g 组按换
+    # 算表折算（kg/千克/公斤×1000、斤×500）、对计数组冲突；计数族互认
+    # （「100 颗」对个组不再误判清零）、其它族非 g 组照填；族外词（哨
+    # 兵捕获）一律按未知 0 诚实缺省，确认时手补，禁静默把 5 公斤填成
+    # 5 g
     category = CATEGORY_FILAMENT if material else CATEGORY_OTHER
+    is_g_group = DEFAULT_UNITS.get(category, "个") == "g"
     qty_match = next(
         (m for line in cleaned if (m := _OCR_QTY_RE.search(line))),
         None,
@@ -491,11 +519,16 @@ def _ocr_suggestion(
     if qty_match:
         quantity = float(qty_match.group(1))
         word = (qty_match.group(2) or "").lower()
-        if word and word != DEFAULT_UNITS.get(category, "个"):
-            if word == "kg" and category == CATEGORY_FILAMENT:
-                quantity *= 1000.0
+        if word:
+            scale = _OCR_UNIT_MASS_SCALE.get(word)
+            if scale is not None:
+                quantity = quantity * scale if is_g_group else 0.0
+            elif word in _OCR_UNIT_COUNT_WORDS or word in _OCR_UNIT_PACKAGE_WORDS:
+                quantity = 0.0 if is_g_group else quantity
             else:
                 quantity = 0.0
+        elif qty_match.group(3):
+            quantity = 0.0
     if not 0 < quantity <= QUANTITY_MAX:
         quantity = 0.0
     extra: dict[str, Any] = {}
@@ -605,10 +638,14 @@ async def _recognize_ocr(
         if resp.status >= 400:
             detail = ""
             if isinstance(data, dict):
-                error = (data.get("Response") or {}).get("Error") or {}
-                detail = str(
-                    error.get("Message") or error.get("Code") or data.get("message") or ""
-                )
+                # Response 非 dict（反代返回非信封错误体）同守不崩
+                # （SR-F-130），detail 尽力取 Error.Message/message
+                envelope = data.get("Response")
+                error = envelope.get("Error") if isinstance(envelope, dict) else None
+                if isinstance(error, dict):
+                    detail = str(error.get("Message") or error.get("Code") or "")
+                if not detail:
+                    detail = str(data.get("message") or "")
             _LOGGER.warning("腾讯 OCR 返回 HTTP %s：%s", resp.status, detail)
             raise ValueError(
                 f"腾讯 OCR 服务返回 {resp.status}：{detail or manager.service_error_hint()}"
@@ -619,7 +656,13 @@ async def _recognize_ocr(
             # TRY004 的 noqa 需贴在 raise 判定行（同 parse_suggestions 先例）
             _LOGGER.warning("腾讯 OCR 返回 200 但回复不是 JSON（服务/反代异常）")
             raise ValueError("腾讯 OCR 服务返回了非 JSON 回复（服务/反代异常）")  # noqa: TRY004
-    response = data.get("Response") or {}
+    # 200 但缺 Response 信封（如反代错误体 {"error":"upstream timeout"}）：
+    # 腾讯契约 200 必有 Response（成功带 TextDetections、失败带 Error），
+    # 缺失=服务/反代异常，不得伪装成空照片（SR-F-130，同 SR-F-127 口径）
+    response = data.get("Response")
+    if not isinstance(response, dict):
+        _LOGGER.warning("腾讯 OCR 返回 200 但缺少 Response 信封（服务/反代异常）")
+        raise ValueError("腾讯 OCR 服务返回了非预期回复（服务/反代异常）")  # noqa: TRY004
     error = response.get("Error")
     if error:
         code = error.get("Code", "")
@@ -630,10 +673,21 @@ async def _recognize_ocr(
         if "LimitExceeded" in code:
             raise ValueError(f"腾讯 OCR 调用受限（免费额度/频率）：{message or code}")
         raise ValueError(f"腾讯 OCR 错误 {code}：{message}")
-    lines = [
-        str(item.get("DetectedText") or "")
-        for item in response.get("TextDetections") or []
-    ]
+    # TextDetections 缺失=合法空照片（腾讯空白图形状），走下方空行路径
+    # 保留「未识别到有效文字」；存在但非数组/元素非对象=畸形信封
+    # （SR-F-130，错误必须响）
+    detections = response.get("TextDetections")
+    if detections is not None and not isinstance(detections, list):
+        _LOGGER.warning("腾讯 OCR 返回 200 但 TextDetections 不是数组（服务/反代异常）")
+        raise ValueError("腾讯 OCR 服务返回了非预期回复（服务/反代异常）")
+    lines = []
+    for item in detections or []:
+        if not isinstance(item, dict):
+            _LOGGER.warning(
+                "腾讯 OCR 返回 200 但 TextDetections 元素不是对象（服务/反代异常）"
+            )
+            raise ValueError("腾讯 OCR 服务返回了非预期回复（服务/反代异常）")  # noqa: TRY004
+        lines.append(str(item.get("DetectedText") or ""))
     suggestions = parse_ocr_text(lines)
     if not suggestions:
         raise ValueError("OCR 未识别到有效文字")
@@ -968,8 +1022,35 @@ class ScanManager:
                 raise ValueError(
                     f"识别服务返回 {resp.status}：{detail or self.service_error_hint()}"
                 )
-            data = data if isinstance(data, dict) else {}
-        content = data["choices"][0]["message"]["content"]
+            if not isinstance(data, dict):
+                # 200 + 非 JSON（HTML/空体）：按服务故障响（SR-F-131，与
+                # local/腾讯信封口径统一），不得落 KeyError 通用「识别失败」
+                _LOGGER.warning(
+                    "[%s] 视觉模型服务返回 200 但回复不是 JSON（服务/反代异常）",
+                    self.engine.warehouse_name,
+                )
+                raise ValueError("识别服务返回了非 JSON 回复（服务/反代异常）")  # noqa: TRY004
+        # choices/message.content 结构校验（SR-F-131）：畸形信封（200 错
+        # 误体/空 choices/message 缺失/content 非字符串）明确响，不落
+        # KeyError 通用「识别失败」；4xx error.message 路径在上方分支保持
+        choices = data.get("choices")
+        message = (
+            choices[0].get("message")
+            if isinstance(choices, list) and choices and isinstance(choices[0], dict)
+            else None
+        )
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, str):
+            _LOGGER.warning(
+                "[%s] 视觉模型服务返回 200 但回复缺少 choices/message.content",
+                self.engine.warehouse_name,
+            )
+            # TRY004 的 noqa 标记须贴多行 raise 首行（同 parse_suggestions 先例）；
+            # 必须 ValueError：webhook 只捕 ValueError 转 ok:false，TypeError 会
+            # 落通用「识别失败」诊断退化
+            raise ValueError(  # noqa: TRY004
+                "识别服务返回了非预期回复（缺少 choices/message.content）"
+            )
         return parse_suggestions(content)
 
     # ------------------------------------------------------------------

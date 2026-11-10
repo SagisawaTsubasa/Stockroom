@@ -361,7 +361,10 @@ _OCR_QTY_RE = re.compile(
 )
 # 克重 strip 分母白名单（SR-F-148）：按件分母超集=数量其它族词表+盘/袋/轴
 # ——只喂 strip 可选段，不动 _OCR_UNIT_PACKAGE_WORDS 本体（它联动
-# _OCR_QTY_RE 单位交替与数量族核算，「数量：1盘」等既有数量语义保持）
+# _OCR_QTY_RE 单位交替与数量族核算，「数量：1卷」等既有数量语义保持；
+# 盘/袋/轴仅进 strip 不进数量族，「数量：1盘」走族外哨兵按未知 0，
+# SR-F-151 注释对齐；对账闸门
+# test_ocr_weight_denom_wordlist_mechanical_reconciliation 钉）
 _OCR_WEIGHT_DENOM_WORDS = _OCR_UNIT_PACKAGE_WORDS + ("盘", "袋", "轴")
 # 名称剥取用（回退路径+名称关键字路径同口径，SR-F-147）：克重字段段（可选
 # 「净重/毛重/重量」字段词+可选冒号，字段词缺省时裸克重 token 照剥；
@@ -488,7 +491,14 @@ def _ocr_suggestion(
     engine-agnostic; ``ocr_lines`` carries the group's raw OCR lines for
     the pending card to show what was actually recognized.
     """
-    text_all = " ".join(cleaned)
+    # 证据行集合（SR-F-149）：兼容清单行（「适用(于)/兼容/支持/适配」开头
+    # 或一行列 ≥2 材质词，_is_compat_listing）只作锚排除不作证据——材质/
+    # 克重/颜色/名称回退四处扫描不再吃营销行（无锚页名称不吞「适用于
+    # PLA/PETG/ABS」、真商品行不丢）；整页只有兼容行时回落全行保名称非空。
+    # 「名称：」关键字行与 ocr_lines 原文展示仍走 cleaned：字段行不是清单
+    # 形态，识别原文是已定决策的展示语义（防「以为只识别出地址」）不过滤
+    evidence = [line for line in cleaned if not _is_compat_listing(line)] or cleaned
+    text_all = " ".join(evidence)
     material = material_hint or next(
         (m for m in _OCR_MATERIALS if re.search(_material_pattern(m), text_all, re.IGNORECASE)),
         None,
@@ -503,7 +513,7 @@ def _ocr_suggestion(
     # seg_has_weight/anchor_self_weight）共用克重正则，数量行仍参与「独
     # 立克重行」判据：拆条逻辑用户已定决策不动，现状快照钉在
     # test_parse_ocr_text_qty_field_masked_from_full_weight
-    weight_text = " ".join(_OCR_QTY_RE.sub(" ", line) for line in cleaned)
+    weight_text = " ".join(_OCR_QTY_RE.sub(" ", line) for line in evidence)
     prefixed = re.search(
         r"(?:" + "|".join(_OCR_WEIGHT_PRIORITY_FIELDS) + r")[:：]?\s*"
         + _OCR_WEIGHT_RE.pattern,
@@ -519,7 +529,7 @@ def _ocr_suggestion(
         full_weight_g = value * _OCR_UNIT_MASS_SCALE[weight_match.group(2).lower()]
         full_weight_g = min(full_weight_g, FULL_WEIGHT_MAX)
     color_word = next(
-        (key for line in cleaned for key in _OCR_COLOR_WORDS if key in line),
+        (key for line in evidence for key in _OCR_COLOR_WORDS if key in line),
         None,
     )
     # 「名称：」关键字行优先（冒号后整段即名称，真实商家标签实证）；
@@ -538,14 +548,15 @@ def _ocr_suggestion(
             or name_keyword
         )
     else:
-        # 名称行与材质同口径（锚材质优先），避免子串误命中（SR-F-073）
+        # 名称行与材质同口径（锚材质优先），避免子串误命中（SR-F-073）；
+        # 证据面走 evidence（SR-F-149：兼容行不抢名称）
         name_line = next(
             (
                 line
-                for line in cleaned
+                for line in evidence
                 if material and re.search(_material_pattern(material), line, re.IGNORECASE)
             ),
-            max(cleaned, key=len),
+            max(evidence, key=len),
         )
         fallback_line = name_line
         # 剥空（整行只有克重）则保原行，名称不得为空
@@ -617,7 +628,10 @@ def parse_ocr_text(lines: list[str]) -> list[dict[str, Any]]:
     page without any material anchor falls back to one suggestion over
     all lines.
     """
-    cleaned = [line.strip() for line in lines if str(line).strip()]
+    # 非 str 行先 str() 归一再剥空白（SR-F-154：过滤器 str() 判真、原对象
+    # .strip() 会 AttributeError/TypeError——公开函数对持久化队列跨版本/
+    # 手工数据的防御面；生产引擎链路已保证 str，此处补契约缺口）
+    cleaned = [text for line in lines if (text := str(line).strip())]
     if not cleaned:
         return []
     anchors = [
@@ -1250,14 +1264,19 @@ class ScanManager:
             )
             return
         for suggestion in queued[:_MAX_NOTIFICATIONS]:
-            summary = f"{suggestion['name']}（{suggestion.get('quantity', 0):g} {suggestion.get('unit', '')}）"
-            # SR-F-146：target 不塞 service_data——服务名已是设备专属
-            # notify.mobile_app_<device>，实证 HA 2026.1 容器源码
-            # notify/legacy.py:248-249 设备专属分支用
-            # registered_targets[service.service] 自行注入 target，塞进
-            # service_data 是被覆盖的死重键（NOTIFY_SERVICE_SCHEMA 虽声明
-            # target 合法，语义上定向应走 async_call 的 target= 关键字参数）
+            # SR-F-152：summary 构造与 async_call 同入逐条 try——缺 name/
+            # quantity 非数值的坏条目（queue_suggestions 是公开方法，队列
+            # 落 META_SCAN_PENDING 持久化，跨版本/手工数据可缺键）单条跳
+            # 过落日志，不再在 try 外 KeyError/:g 异常整批中止（SR-F-146
+            # 同型邻界面）
             try:
+                summary = f"{suggestion['name']}（{suggestion.get('quantity', 0):g} {suggestion.get('unit', '')}）"
+                # SR-F-146：target 不塞 service_data——服务名已是设备专属
+                # notify.mobile_app_<device>，实证 HA 2026.1 容器源码
+                # notify/legacy.py:248-249 设备专属分支用
+                # registered_targets[service.service] 自行注入 target，塞进
+                # service_data 是被覆盖的死重键（NOTIFY_SERVICE_SCHEMA 虽声明
+                # target 合法，语义上定向应走 async_call 的 target= 关键字参数）
                 await self.hass.services.async_call(
                     notify.DOMAIN,
                     service_name,
@@ -1277,10 +1296,12 @@ class ScanManager:
             except Exception:
                 # 单条失败不炸整批剩余通知（本函数走 async_create_task 的
                 # fire-and-forget 任务，旧实现一条异常即整批跳过）；落日志
-                # 收口（异步不吞异常纪律）
+                # 收口（异步不吞异常纪律）。name/id 兜底取值防异常处理自身
+                # 对坏条目再抛（SR-F-152）
                 _LOGGER.exception(
                     "[%s] 确认通知发送失败，跳过 %s 继续其余通知",
-                    self.engine.warehouse_name, suggestion["name"],
+                    self.engine.warehouse_name,
+                    suggestion.get("name") or suggestion.get("id", "?"),
                 )
 
     @callback

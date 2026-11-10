@@ -120,9 +120,15 @@ def _warehouse_payload(engine: Any, scan_view: dict[str, Any]) -> dict[str, Any]
 def _scan_view(engine: Any) -> dict[str, Any]:
     """Scan-tab info for one warehouse: enabled/pending/webhook URL."""
     scan = engine.scan
+    # SR-F-163：排序 key 对非 dict 条目兜底空串——pending 桶与队列持久化
+    # 同源（公开可写+跨版本可达），单条 null 就会在本函数 AttributeError，
+    # 而 _scan_view 在 overview 聚合里被调用：面板每 5 秒轮询的 overview
+    # REST 整页 500（坏条目炸掉整个面板视图）。
     pending = sorted(
         _get_store_scan_pending(engine, scan),
-        key=lambda sid_entry: sid_entry[1].get("created_at", ""),
+        key=lambda sid_entry: (
+            sid_entry[1].get("created_at", "") if isinstance(sid_entry[1], dict) else ""
+        ),
     )
     return {
         "enabled": scan is not None,
@@ -486,6 +492,10 @@ class ScanView(HomeAssistantView):
 
         try:
             suggestions = await scan._recognize(image)
+            # SR-F-164：queue_suggestions 的整批形状校验失败 raise
+            # ValueError——纳入本 try 复用既有 ValueError→ok:false 通道
+            # （旧位置在 try 外，校验失败冒 500 通用诊断）。
+            queued = scan.queue_suggestions(suggestions)
         except ValueError as err:
             _LOGGER.warning("[%s] 识别结果无法解析：%s", engine.warehouse_name, err)
             return self.json({"ok": False, "error": str(err)})
@@ -507,8 +517,6 @@ class ScanView(HomeAssistantView):
         except Exception:
             _LOGGER.exception("[%s] 识别失败", engine.warehouse_name)
             return self.json({"ok": False, "error": "识别失败，见日志"})
-
-        queued = scan.queue_suggestions(suggestions)
         _LOGGER.info(
             "[%s] 面板扫描识别到 %d/%d 个条目建议（队列 %d 项）",
             engine.warehouse_name, len(queued), len(suggestions), len(scan.queue()),

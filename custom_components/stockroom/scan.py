@@ -99,6 +99,13 @@ _LOGGER = logging.getLogger(__name__)
 # JSON response (and the scan_confirm service) cover the rest.
 _MAX_NOTIFICATIONS = 5
 
+# 「缺键」与「值为 None」的分离哨兵（SR-F-163）：队列公开可写+落盘持久
+# 化（META_SCAN_PENDING 跨版本/手工改库可达），桶里可存 null——pop 的
+# default 用 None 会把「无此 sid」与「None 条目」混为一谈（None 条目被
+# 静默当不存在：confirm 删条目不报错、dismiss 计 0 不落盘）。
+_MISSING = object()
+
+
 def webhook_id_for_entry(entry_id: str) -> str:
     """The stable per-entry webhook id (entry ids are unguessable UUIDs)."""
     return f"stockroom-{entry_id}"
@@ -1037,6 +1044,10 @@ class ScanManager:
 
         try:
             suggestions = await self._recognize(image)
+            # SR-F-164：queue_suggestions 的整批形状校验失败 raise
+            # ValueError——纳入本 try 复用既有 ValueError→ok:false 通道
+            # （旧位置在 try 外，校验失败冒 500 通用诊断）。
+            queued = self.queue_suggestions(suggestions)
         except ValueError as err:
             # parse_suggestions raising is a recognition failure, not an
             # empty photo — tell the caller instead of ok:true + [].
@@ -1063,7 +1074,6 @@ class ScanManager:
             _LOGGER.exception("[%s] 识别失败", self.engine.warehouse_name)
             return web.json_response({"ok": False, "error": "识别失败，见日志"})
 
-        queued = self.queue_suggestions(suggestions)
         _LOGGER.info(
             "[%s] 扫描识别到 %d/%d 个条目建议（队列 %d 项）",
             self.engine.warehouse_name, len(queued), len(suggestions), len(self.queue()),
@@ -1190,15 +1200,39 @@ class ScanManager:
     def queue_suggestions(self, suggestions: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Store suggestions with ids; evict oldest beyond the queue cap."""
         bucket = self.queue()
+        # SR-F-164：入参形状契约校验前置到写入循环之前（公开方法+队列落
+        # 盘持久化，与 confirm 同一威胁模型）——坏元素整批拒绝，零写入，
+        # 不留「前面几条已进 bucket、mark_dirty 未执行」的半批内存态；
+        # 旧实现非 dict 元素的 ``**suggestion`` 展开在循环中段 TypeError。
+        # 必须 ValueError：两个调用方（webhook/_handle_webhook、面板
+        # ScanView）只捕 ValueError 转 ok:false（1172 行先例注释同构），
+        # 其他异常类型落通用「识别失败」诊断退化。
+        bad = next((s for s in suggestions if not isinstance(s, dict)), None)
+        if bad is not None:
+            raise ValueError(
+                f"扫描建议数据损坏（非对象：{type(bad).__name__}），整批未入库"
+            )
         now = datetime.now(UTC).isoformat()
         queued: list[dict[str, Any]] = []
         for suggestion in suggestions:
             sid = secrets.token_hex(8)
-            entry = {"id": sid, "created_at": now, **suggestion}
+            # SR-F-164：生成键写在对入参展开之后——suggestion 自带的 id/
+            # created_at 不得覆盖新生成值（旧顺序 {"id":…, **suggestion}
+            # PEP 448 后者胜，入参 id 覆盖生成 sid → entry["id"] 与桶键
+            # 失配，通知 tag/确认/忽略 action/面板 suggestion.id 全部落空）
+            entry = {**suggestion, "id": sid, "created_at": now}
             bucket[sid] = entry
             queued.append(entry)
         while len(bucket) > SCAN_MAX_QUEUE:
-            oldest = min(bucket, key=lambda sid: bucket[sid].get("created_at", ""))
+            # SR-F-163：排序 key 对非 dict 条目兜底空串——坏条目（None 等）
+            # 在此 AttributeError 会让插入之后、mark_dirty 之前的队列半批
+            # 进内存未标脏，webhook 侧冒 500。
+            oldest = min(
+                bucket,
+                key=lambda sid: (
+                    bucket[sid].get("created_at", "") if isinstance(bucket[sid], dict) else ""
+                ),
+            )
             del bucket[oldest]
         self.store.mark_dirty(self.entry.entry_id)
         return queued
@@ -1207,8 +1241,12 @@ class ScanManager:
         self, sid: str, overrides: dict[str, Any] | None = None
     ) -> dict[str, Any] | None:
         """Turn one suggestion into a real item via the regular add path."""
-        suggestion = self.queue().pop(sid, None)
-        if suggestion is None:
+        # SR-F-163：pop 的 default 用 _MISSING 哨兵——None 值条目与「无此
+        # sid」不再不可区分，None 落入下方 isinstance 守卫走「数据损坏已
+        # 留队」明确报错（旧实现 pop(sid, None) 把 None 条目静默当不存在
+        # 删除，与 SR-F-161 语义相反）。
+        suggestion = self.queue().pop(sid, _MISSING)
+        if suggestion is _MISSING:
             return None
         # SR-F-161：前置归一（fields/overrides/extra 构造与坏形态检查）全
         # 部纳入 restore try——队列公开可写+持久化跨版本，坏形态条目 pop
@@ -1297,7 +1335,10 @@ class ScanManager:
             count = len(bucket)
             bucket.clear()
         else:
-            count = 1 if bucket.pop(ref, None) is not None else 0
+            # SR-F-163：哨兵判定——None 条目也计 1 并 mark_dirty 落盘
+            # （旧实现 pop(ref, None) 把 None 条目 pop 掉却计 0：条目被删
+            # 但删除不落盘，scan_dismiss 还报「不存在」）。
+            count = 1 if bucket.pop(ref, _MISSING) is not _MISSING else 0
         if count:
             self.store.mark_dirty(self.entry.entry_id)
         return count

@@ -43,6 +43,7 @@ from homeassistant.components.webhook import (
     async_unregister,
 )
 from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.network import NoURLAvailableError
 
@@ -342,8 +343,12 @@ _OCR_WEIGHT_PRIORITY_FIELDS = ("净重", "重量")
 # 数量哨兵专用排除表（SR-F-142）：名称边界表不含克重字段词——「数量：1
 # 净重：1kg」的「净」会被哨兵当族外计量词捕获（数量置 0+遮蔽吞净重首
 # 字），数量哨兵的排除表需含克重字段词族；名称边界表保持原表不动
-# （克重字段段由 strip RE 单独剥，名称边界不截）
-_OCR_QTY_FIELD_WORDS = _OCR_FIELD_WORDS + "|" + "|".join(_OCR_WEIGHT_FIELDS)
+# （克重字段段由 strip RE 单独剥，名称边界不截）。SR-F-162 补「名称」：
+# 合行「数量：100 名称：X」修前哨兵在「名」处前瞻通过当族外计量词捕获
+# （100 静默置 0，SR-F-142 同形换最常用字段词）——「名称」只进本拼接
+# 层，_OCR_FIELD_WORDS 本体不动（它同时喂 _OCR_NAME_RE 右边界，截断
+# 语义不变）；对账闸门以「名称」字面量独立对账（删词必红，改词=决策点）
+_OCR_QTY_FIELD_WORDS = _OCR_FIELD_WORDS + "|名称|" + "|".join(_OCR_WEIGHT_FIELDS)
 # 数量词表=三族全集（质量换算表+计数族+其它族，SR-F-129 扩中文词）；
 # 尾随哨兵组捕获数字后紧跟的族外词首字符（unicode 字母）——词表外计量
 # 词（如「箱」）按未知 0 诚实缺省，不再裸数字误填（SR-F-129）。哨兵是
@@ -382,13 +387,13 @@ _OCR_WEIGHT_STRIP_RE = re.compile(
 )
 # 字段行判别（两层关键字识别第一层，SR-F-155/156 用户拍板重做
 # 2026-11-10）：含任意「字段词[:：]」的行=商家标签字段行，豁免清单过滤
-# 整行作证。字段词=名称关键字「名称」∪名称边界表∪克重字段词——
-# _OCR_QTY_FIELD_WORDS 已是边界表∪克重字段词的同源拼接（SR-F-142 常量，
-# 禁第四份手抄），「名称」与 _OCR_NAME_RE 的关键字字面量同款（它另有
-# 捕获/边界语义不共用常量）。冒号必须：克重字段词带可选冒号会把「净重
-# 1kg」裸克重行也豁免，「适用于…白色 净重 1kg」营销行重新入证（SR-F-158
-# 格红）；名称/数量/库位等真实字段行恒带冒号（真实标签取证 2026-11-09）
-_OCR_FIELD_LINE_RE = re.compile(rf"(?:名称|{_OCR_QTY_FIELD_WORDS})[:：]")
+# 整行作证。字段词全集=_OCR_QTY_FIELD_WORDS 同源引用（名称关键字∪名称
+# 边界表∪克重字段词，SR-F-162 起「名称」在常量拼接层，此处不再重复
+# 字面量防两处漂移；_OCR_NAME_RE 的捕获/边界语义仍不共用本常量）。冒号
+# 必须：克重字段词带可选冒号会把「净重 1kg」裸克重行也豁免，「适用于…
+# 白色 净重 1kg」营销行重新入证（SR-F-158 格红）；名称/数量/库位等真实
+# 字段行恒带冒号（真实标签取证 2026-11-09）
+_OCR_FIELD_LINE_RE = re.compile(rf"(?:{_OCR_QTY_FIELD_WORDS})[:：]")
 
 
 def _material_pattern(material: str) -> str:
@@ -1205,44 +1210,69 @@ class ScanManager:
         suggestion = self.queue().pop(sid, None)
         if suggestion is None:
             return None
-        fields = {key: value for key, value in suggestion.items() if key not in ("id", "created_at")}
-        overrides = dict(overrides or {})
-        extra = dict(fields.get("extra") or {})
-        # 可清空识别属性的空值语义与 update_item 一致（ocr-ux-R1 #3）：面板编辑
-        # 对话框总是发送 trim 后的值——空串/0 = 清除该属性，缺键 = 保持识别值。
-        for key in (EXTRA_MATERIAL, EXTRA_COLOR):
-            if overrides.get(key) is not None:
-                value = str(overrides.pop(key)).strip()
-                if value:
-                    extra[key] = value
-                else:
-                    extra.pop(key, None)
-        if overrides.get(EXTRA_FULL_WEIGHT_G) is not None:
-            weight = overrides.pop(EXTRA_FULL_WEIGHT_G)
-            try:
-                weight_number = float(weight)
-            except (TypeError, ValueError):
-                weight_number = 0.0
-            if 0 < weight_number <= FULL_WEIGHT_MAX:
-                extra[EXTRA_FULL_WEIGHT_G] = weight_number
-            else:
-                extra.pop(EXTRA_FULL_WEIGHT_G, None)
-        fields.update({key: value for key, value in overrides.items() if value is not None})
-        # 空名称覆盖没有意义（add_item 会 slugify 出哈希 id）——保留识别名。
-        # 右值走 .get 兜底链收空串（SR-F-159 坏条目防线）：旧实现 fields
-        # ["name"] 直索引，缺 name 的坏条目在此 KeyError 且位于 add_item
-        # 的 restore try 之外——建议已 pop 丢失+scan_confirm 服务 500；
-        # "name": None 旧实现经 add_item 的 str(name).strip() 变「None」
-        # 字面名条目。收空串后坏条目滑入 add_item 既有空名拒绝
-        # （StockroomItemError 在 restore try 内：建议留队、错误明确、
-        # 服务干净失败），override 带有效名称的编辑补名修复流不受影响
-        if not str(fields.get("name") or "").strip():
-            fields["name"] = suggestion.get("name") or fields.get("name") or ""
-        if extra:
-            fields["extra"] = extra
-        else:
-            fields.pop("extra", None)
+        # SR-F-161：前置归一（fields/overrides/extra 构造与坏形态检查）全
+        # 部纳入 restore try——队列公开可写+持久化跨版本，坏形态条目 pop
+        # 后必须能回队（旧实现归一在 try 外：坏 extra 的 dict()/非 dict
+        # 建议的 .items() 抛错即建议已丢+scan_confirm 服务无信息 500，
+        # SR-F-159 同款兄弟面）。可救则救（坏 extra 置空告警继续），不可
+        # 救按坏条目拒绝+留队+明确错误（与 add_item 的 StockroomItemError
+        # 同走 except 回队通道）
         try:
+            if not isinstance(suggestion, dict):
+                raise HomeAssistantError(
+                    f"扫描建议数据损坏（非对象：{type(suggestion).__name__}），"
+                    "已留队，可忽略该条目或重新识别"
+                )
+            fields = {key: value for key, value in suggestion.items() if key not in ("id", "created_at")}
+            overrides = dict(overrides or {})
+            raw_extra = fields.get("extra")
+            if not raw_extra:
+                extra = {}
+            elif isinstance(raw_extra, dict):
+                extra = dict(raw_extra)
+            else:
+                # 坏 extra（非 dict 真值）可救则救：WARNING 在案（错误必须
+                # 响不静默）+置空丢弃该字段继续入库
+                _LOGGER.warning(
+                    "[%s] 扫描建议 extra 字段损坏（非对象：%r），丢弃该字段继续入库",
+                    self.engine.warehouse_name,
+                    raw_extra,
+                )
+                extra = {}
+            # 可清空识别属性的空值语义与 update_item 一致（ocr-ux-R1 #3）：面板编辑
+            # 对话框总是发送 trim 后的值——空串/0 = 清除该属性，缺键 = 保持识别值。
+            for key in (EXTRA_MATERIAL, EXTRA_COLOR):
+                if overrides.get(key) is not None:
+                    value = str(overrides.pop(key)).strip()
+                    if value:
+                        extra[key] = value
+                    else:
+                        extra.pop(key, None)
+            if overrides.get(EXTRA_FULL_WEIGHT_G) is not None:
+                weight = overrides.pop(EXTRA_FULL_WEIGHT_G)
+                try:
+                    weight_number = float(weight)
+                except (TypeError, ValueError):
+                    weight_number = 0.0
+                if 0 < weight_number <= FULL_WEIGHT_MAX:
+                    extra[EXTRA_FULL_WEIGHT_G] = weight_number
+                else:
+                    extra.pop(EXTRA_FULL_WEIGHT_G, None)
+            fields.update({key: value for key, value in overrides.items() if value is not None})
+            # 空名称覆盖没有意义（add_item 会 slugify 出哈希 id）——保留识别名。
+            # 右值走 .get 兜底链收空串（SR-F-159 坏条目防线）：旧实现 fields
+            # ["name"] 直索引，缺 name 的坏条目在此 KeyError 且位于 add_item
+            # 的 restore try 之外——建议已 pop 丢失+scan_confirm 服务 500；
+            # "name": None 旧实现经 add_item 的 str(name).strip() 变「None」
+            # 字面名条目。收空串后坏条目滑入 add_item 既有空名拒绝
+            # （StockroomItemError 在 restore try 内：建议留队、错误明确、
+            # 服务干净失败），override 带有效名称的编辑补名修复流不受影响
+            if not str(fields.get("name") or "").strip():
+                fields["name"] = suggestion.get("name") or fields.get("name") or ""
+            if extra:
+                fields["extra"] = extra
+            else:
+                fields.pop("extra", None)
             item = self.engine.add_item(
                 name=fields["name"],
                 category=fields.get("category", CATEGORY_OTHER),

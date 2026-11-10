@@ -527,6 +527,16 @@ class StockroomPanel extends HTMLElement {
     const root = this.shadowRoot;
     const container = root.querySelector(".srp-root");
     if (!container) return;
+    // 识别原文展开态采集（SR-F-125）：open 属性随用户点击同步翻转
+    // （异步派发的只是 toggle 事件），清空 DOM 前按 data-id 收走当前
+    // 展开集，_renderScan 重建时原样回放——不依赖事件时序，随渲染
+    // 自更新（不存在陈旧 id 累积）
+    this._scanOcrOpen = new Set(
+      Array.from(
+        container.querySelectorAll(".srp-scan-ocr-raw[open]"),
+        (d) => d.dataset.id
+      )
+    );
     container.innerHTML = "";
     container.append(this._renderTopbar());
     if (this._error) {
@@ -1211,11 +1221,17 @@ class StockroomPanel extends HTMLElement {
                   }) + this._scanExtraText(suggestion),
               }),
               // 识别原文折叠展示（裸 lines，防「以为 OCR 只识别出地址」）；
-              // el() 的 text 走 textContent，OCR 原文注入面天然安全
+              // el() 的 text 走 textContent，OCR 原文注入面天然安全。
+              // 展开态跨重绘回放（SR-F-125）：data-id 供 _render 采集，
+              // open 从采集集恢复（el() 对 undefined 跳过 setattr）
               (suggestion.ocr_lines || []).length
                 ? el(
                     "details",
-                    { class: "srp-scan-ocr-raw" },
+                    {
+                      class: "srp-scan-ocr-raw",
+                      "data-id": suggestion.id,
+                      open: this._scanOcrOpen.has(suggestion.id) ? "" : undefined,
+                    },
                     el("summary", { text: t("scanOcrRaw") }),
                     el("div", {
                       class: "srp-scan-ocr-raw-lines",

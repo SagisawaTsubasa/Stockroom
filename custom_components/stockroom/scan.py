@@ -304,14 +304,25 @@ _OCR_WEIGHT_RE = re.compile(
 _OCR_COMPAT_RE = re.compile(r"^\s*(适用|兼容|支持|适配)")
 # 商家标签关键字字段行（真实标签实证 2026-11-09：全/半角冒号，一行可含
 # 多字段——数量必须行内锚定，「排序：25-1 数量：100」只抓 100；名称取
-# 冒号后整段。取证：debug/real-device-20261109/real-lines-20261109.md）
-_OCR_NAME_RE = re.compile(r"名称[:：]\s*(.+)")
-_OCR_QTY_RE = re.compile(r"数量[:：]\s*(\d+(?:\.\d+)?)")
-# 名称回退剥取用：克重字段段（可选「净重/毛重/重量」字段词 + 克重值）。
+# 冒号后整段，右边界用「字段词+冒号」前瞻截断（OCR 合并行时名称不粘
+# 「库位：…」，边界词只截断不解析，SR-F-123）。取证：
+# debug/real-device-20261109/real-lines-20261109.md）
+_OCR_NAME_RE = re.compile(
+    r"名称[:：]\s*(.+?)(?=\s+(?:库位|排序|数量|公司|电话|地址|执行标准|生产日期)[:：]|$)"
+)
+# 数量词表=库存既有 unit 值域（SCAN_PROMPT「颗|个|卷|g」+ DEFAULT_UNITS）
+# + 标签常见包装/计量词（包/盒/米）+ 克重族 kg/g；捕获词与组默认单位
+# 语义核对见 _ocr_suggestion（冲突按未知 0，SR-F-124）
+_OCR_QTY_RE = re.compile(
+    r"数量[:：]\s*(\d+(?:\.\d+)?)\s*(卷|颗|个|包|盒|米|kg|g)?",
+    re.IGNORECASE,
+)
+# 名称回退剥取用：克重字段段（可选「净重/毛重/重量」字段词+可选冒号，
+# 字段词缺省时裸克重 token 照剥；「净重：1kg」整段剥净 SR-F-126）。
 # 复用 _OCR_WEIGHT_RE 的 pattern 继承密度排除（SR-F-072/081）；材质/颜色
 # 是商品名的自然组成不剥，克重是纯规格数值才剥（2026-11-09 用户返修定案）
 _OCR_WEIGHT_STRIP_RE = re.compile(
-    r"(?:净重|毛重|重量)?\s*" + _OCR_WEIGHT_RE.pattern, re.IGNORECASE
+    r"(?:(?:净重|毛重|重量)[:：]?)?\s*" + _OCR_WEIGHT_RE.pattern, re.IGNORECASE
 )
 
 
@@ -466,12 +477,25 @@ def _ocr_suggestion(
         )
     # 「数量：」行内锚定提取（一行可含多字段，「排序：25-1 数量：100」
     # 只抓 100）；越界按未知 0 处理（SR-F-012 同型闸，引擎层
-    # add_item/_round_quantity 对确认入库的值另有兜底钳制）
+    # add_item/_round_quantity 对确认入库的值另有兜底钳制）。
+    # 单位语义核对（SR-F-124）：数量自带单位词时对组默认单位核对
+    # （确认入库即落 DEFAULT_UNITS[category]）——g 组 g 直填、kg ×1000
+    # 换算；冲突（「3 卷」对 g 组）按未知 0 诚实缺省，确认时手补，
+    # 禁静默把 3 卷填成 3 g
+    category = CATEGORY_FILAMENT if material else CATEGORY_OTHER
     qty_match = next(
         (m for line in cleaned if (m := _OCR_QTY_RE.search(line))),
         None,
     )
-    quantity = float(qty_match.group(1)) if qty_match else 0.0
+    quantity = 0.0
+    if qty_match:
+        quantity = float(qty_match.group(1))
+        word = (qty_match.group(2) or "").lower()
+        if word and word != DEFAULT_UNITS.get(category, "个"):
+            if word == "kg" and category == CATEGORY_FILAMENT:
+                quantity *= 1000.0
+            else:
+                quantity = 0.0
     if not 0 < quantity <= QUANTITY_MAX:
         quantity = 0.0
     extra: dict[str, Any] = {}
@@ -483,7 +507,7 @@ def _ocr_suggestion(
         extra[EXTRA_FULL_WEIGHT_G] = full_weight_g
     suggestion: dict[str, Any] = {
         "name": name_line[:60],
-        "category": CATEGORY_FILAMENT if material else CATEGORY_OTHER,
+        "category": category,
         "quantity": quantity,
         "location": "",
         # 识别原文随行存储（面板待确认卡展示，防「以为只识别出地址」）；
@@ -589,7 +613,12 @@ async def _recognize_ocr(
             raise ValueError(
                 f"腾讯 OCR 服务返回 {resp.status}：{detail or manager.service_error_hint()}"
             )
-        data = data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            # 200 + 非 JSON（反代错误页/网关异常）按服务故障响，不得落进
+            # 「未识别到有效文字」把故障伪装成空照片（SR-F-127，错误必须响）；
+            # TRY004 的 noqa 需贴在 raise 判定行（同 parse_suggestions 先例）
+            _LOGGER.warning("腾讯 OCR 返回 200 但回复不是 JSON（服务/反代异常）")
+            raise ValueError("腾讯 OCR 服务返回了非 JSON 回复（服务/反代异常）")  # noqa: TRY004
     response = data.get("Response") or {}
     error = response.get("Error")
     if error:
@@ -775,9 +804,12 @@ class ScanManager:
     def async_setup(self) -> list[Any]:
         """Register the webhook and the notification-action listener.
 
-        Unregister first: a failed setup leaves the old handler registered
-        (HA never unloads a SETUP_ERROR entry), and a plain re-register would
-        raise ``ValueError: Handler is already defined!`` forever after.
+        Idempotent: a failed setup leaves the old handler registered (HA
+        never unloads a SETUP_ERROR entry), and a plain re-register would
+        raise ``ValueError: Handler is already defined!`` forever after;
+        the bus-listener side unsubscribes first too — listeners stacked by
+        a repeated setup would route one button tap N times (SR-F-128,
+        FilterEngine.async_setup's teardown-first precedent).
         """
         async_unregister(self.hass, self.webhook_id)
         async_register(
@@ -788,6 +820,12 @@ class ScanManager:
             self._handle_webhook,
             local_only=True,
         )
+        # 幂等（同 FilterEngine.async_setup 的 teardown-first 惯例）：重复
+        # setup 先摘旧 bus 监听再登记——webhook 有 unregister-first 而监听
+        # 此前没有，叠加监听会把一次确认按钮重复入库（SR-F-128）
+        for unsub in self._listeners:
+            unsub()
+        self._listeners.clear()
         self._listeners.append(
             self.hass.bus.async_listen(NOTIFICATION_ACTION_EVENT, self._on_notification_action)
         )

@@ -359,17 +359,22 @@ _OCR_QTY_RE = re.compile(
     rf"(?:(?!(?:{_OCR_QTY_FIELD_WORDS})[:：])([^\W\d_]))?",
     re.IGNORECASE,
 )
-# 名称回退剥取用：克重字段段（可选「净重/毛重/重量」字段词+可选冒号，
-# 字段词缺省时裸克重 token 照剥；「净重：1kg」整段剥净 SR-F-126）+按件
-# 分母可选段（「净重 1kg/卷」随 SR-F-143 守卫收窄入合法克重，整段含
-# 「/卷」剥净不残留斜杠碎片，词表与数量其它族同源）+包装后缀「装」
-# （「250g装/1kg装」连装剥净不残留，SR-F-132）。复用 _OCR_WEIGHT_RE 的
-# pattern 继承中文质量词与密度排除（SR-F-129/072/081）；材质/颜色是
-# 商品名的自然组成不剥，克重是纯规格数值才剥（2026-11-09 用户返修定案）
+# 克重 strip 分母白名单（SR-F-148）：按件分母超集=数量其它族词表+盘/袋/轴
+# ——只喂 strip 可选段，不动 _OCR_UNIT_PACKAGE_WORDS 本体（它联动
+# _OCR_QTY_RE 单位交替与数量族核算，「数量：1盘」等既有数量语义保持）
+_OCR_WEIGHT_DENOM_WORDS = _OCR_UNIT_PACKAGE_WORDS + ("盘", "袋", "轴")
+# 名称剥取用（回退路径+名称关键字路径同口径，SR-F-147）：克重字段段（可选
+# 「净重/毛重/重量」字段词+可选冒号，字段词缺省时裸克重 token 照剥；
+# 「净重：1kg」整段剥净 SR-F-126）+按件分母可选段（「净重 1kg/卷」随
+# SR-F-143 守卫收窄入合法克重，整段含「/卷」「/盘」剥净不残留斜杠碎片，
+# 词表=上方按件超集 SR-F-148）+包装后缀「装」（「250g装/1kg装」连装剥净
+# 不残留，SR-F-132）。复用 _OCR_WEIGHT_RE 的 pattern 继承中文质量词与
+# 密度排除（SR-F-129/072/081）；材质/颜色是商品名的自然组成不剥，克重是
+# 纯规格数值才剥（2026-11-09 用户返修定案）
 _OCR_WEIGHT_STRIP_RE = re.compile(
     r"(?:(?:" + "|".join(_OCR_WEIGHT_FIELDS) + r")[:：]?)?\s*"
     + _OCR_WEIGHT_RE.pattern
-    + r"(?:\s*[/／]\s*(?:" + "|".join(_OCR_UNIT_PACKAGE_WORDS) + r"))?装?",
+    + r"(?:\s*[/／]\s*(?:" + "|".join(_OCR_WEIGHT_DENOM_WORDS) + r"))?装?",
     re.IGNORECASE,
 )
 
@@ -525,7 +530,13 @@ def _ocr_suggestion(
         None,
     )
     if name_keyword:
-        name_line = name_keyword
+        # 名称关键字行同过克重 strip（SR-F-147）：「名称：X 净重：80g」
+        # 合行名不残留克重段，与回退路径同口径（材质/颜色保留不剥，
+        # 2026-11-09 返修定案）；剥空保原名（名称不得为空）
+        name_line = (
+            re.sub(r"\s+", " ", _OCR_WEIGHT_STRIP_RE.sub("", name_keyword)).strip(" ·-—")
+            or name_keyword
+        )
     else:
         # 名称行与材质同口径（锚材质优先），避免子串误命中（SR-F-073）
         name_line = next(
@@ -1240,23 +1251,37 @@ class ScanManager:
             return
         for suggestion in queued[:_MAX_NOTIFICATIONS]:
             summary = f"{suggestion['name']}（{suggestion.get('quantity', 0):g} {suggestion.get('unit', '')}）"
-            await self.hass.services.async_call(
-                notify.DOMAIN,
-                service_name,
-                {
-                    "title": "Stockroom 扫描入库",
-                    "message": f"识别到：{summary}",
-                    "target": webhook_id,
-                    "data": {
-                        "tag": f"stockroom-{suggestion['id']}",
-                        "actions": [
-                            {"action": f"{ACTION_CONFIRM_PREFIX}{suggestion['id']}", "title": "✓ 入库"},
-                            {"action": f"{ACTION_DISMISS_PREFIX}{suggestion['id']}", "title": "✕ 忽略"},
-                        ],
+            # SR-F-146：target 不塞 service_data——服务名已是设备专属
+            # notify.mobile_app_<device>，实证 HA 2026.1 容器源码
+            # notify/legacy.py:248-249 设备专属分支用
+            # registered_targets[service.service] 自行注入 target，塞进
+            # service_data 是被覆盖的死重键（NOTIFY_SERVICE_SCHEMA 虽声明
+            # target 合法，语义上定向应走 async_call 的 target= 关键字参数）
+            try:
+                await self.hass.services.async_call(
+                    notify.DOMAIN,
+                    service_name,
+                    {
+                        "title": "Stockroom 扫描入库",
+                        "message": f"识别到：{summary}",
+                        "data": {
+                            "tag": f"stockroom-{suggestion['id']}",
+                            "actions": [
+                                {"action": f"{ACTION_CONFIRM_PREFIX}{suggestion['id']}", "title": "✓ 入库"},
+                                {"action": f"{ACTION_DISMISS_PREFIX}{suggestion['id']}", "title": "✕ 忽略"},
+                            ],
+                        },
                     },
-                },
-                blocking=True,
-            )
+                    blocking=True,
+                )
+            except Exception:
+                # 单条失败不炸整批剩余通知（本函数走 async_create_task 的
+                # fire-and-forget 任务，旧实现一条异常即整批跳过）；落日志
+                # 收口（异步不吞异常纪律）
+                _LOGGER.exception(
+                    "[%s] 确认通知发送失败，跳过 %s 继续其余通知",
+                    self.engine.warehouse_name, suggestion["name"],
+                )
 
     @callback
     def _on_notification_action(self, event: Event) -> None:
